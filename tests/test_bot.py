@@ -31,7 +31,10 @@ def test_intents_are_the_minimum_set(bot_module):
 
 
 def test_no_mentions_by_default(bot_module):
-    assert bot_module.bot.allowed_mentions == discord.AllowedMentions.none()
+    mentions = bot_module.bot.allowed_mentions
+    assert mentions.everyone is False
+    assert mentions.users is False
+    assert mentions.roles is False
 
 
 def test_who_pattern(bot_module):

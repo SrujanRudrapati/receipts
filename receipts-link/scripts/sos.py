@@ -27,10 +27,11 @@ def sos_line(receipt_id: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--id", required=True, help="the receipt id from pull.py")
+    parser.add_argument("--again", action="store_true", help="send even though the group was already asked")
     parser.add_argument("--sample", action="store_true", help="print the line without sending it or touching state")
     args = parser.parse_args(argv)
 
-    if not link.ID_PATTERN.match(args.id):
+    if not link.valid_id(args.id):
         link.fail("receipt ids are 8 lowercase hex characters.", link.EXIT_ARGS)
     if args.sample:
         print(f"would send: {sos_line(args.id)}")
@@ -40,6 +41,9 @@ def main(argv: list[str] | None = None) -> int:
     receipt = state["receipts"].get(args.id)
     if receipt is None or receipt.get("status") != "open":
         link.fail(f"{args.id} is not one of the student's open receipts. Run pull.py first and use an id from it.",
+                  link.EXIT_ARGS)
+    if receipt.get("sos_sent") and not args.again:
+        link.fail("the group was already asked about this one. Add --again only if the student wants to ask once more.",
                   link.EXIT_ARGS)
     link.publish(topic, sos_line(args.id))
     receipts = {**state["receipts"], args.id: {**receipt, "sos_sent": int(time.time())}}

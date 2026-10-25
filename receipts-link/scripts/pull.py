@@ -63,12 +63,13 @@ def mark_offered(receipt_id: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--now", help="the student's local date and time, ISO 8601 with offset")
-    parser.add_argument("--offered", metavar="ID", help="remember that a time block was offered for this receipt")
-    parser.add_argument("--sample", action="store_true", help="offline demo with assets/sample_poll.ndjson, no state")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--offered", metavar="ID", help="remember that a time block was offered for this receipt")
+    mode.add_argument("--sample", action="store_true", help="offline demo with assets/sample_poll.ndjson, no state")
     args = parser.parse_args(argv)
 
     if args.offered:
-        if not link.ID_PATTERN.match(args.offered):
+        if not link.valid_id(args.offered):
             link.fail("receipt ids are 8 lowercase hex characters.", link.EXIT_ARGS)
         return mark_offered(args.offered)
     if args.sample:

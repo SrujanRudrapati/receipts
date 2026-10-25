@@ -384,3 +384,113 @@ def test_skill_md_names_real_files_and_triggers():
     assert 'RECEIPTS_LINK_TOKEN="$RECEIPTS_LINK_TOKEN" python3 scripts/pull.py' in text
     assert 'RECEIPTS_LINK_TOKEN="$RECEIPTS_LINK_TOKEN" python3 scripts/sos.py' in text
     assert "I'll only say you need help, not why" in text
+
+
+# ---- hardening: the topic is untrusted input too
+
+
+@pytest.mark.parametrize("bad", ["my topic", "receipts-a\nbc", "a/b", "x" * 65, "receipts-ébc"])
+def test_malformed_token_fails_without_echoing_it(pull, home, monkeypatch, capsys, bad):
+    monkeypatch.setenv("RECEIPTS_LINK_TOKEN", bad)
+    code, out, err = run(pull, [], capsys)
+    assert code == 3
+    assert err.count("\n") == 1 and bad.strip() not in err and "Traceback" not in err
+
+
+def test_send_never_lets_an_exception_escape(pull, link, home, token, monkeypatch, capsys):
+    import http.client
+    fake_urlopen(link, monkeypatch, error=http.client.InvalidURL(f"URL can't contain control characters. '/{TOPIC}/json'"))
+    code, out, err = run(pull, [], capsys)
+    assert code == 4 and TOPIC not in err and "Traceback" not in err
+    fake_urlopen(link, monkeypatch, error=ValueError(f"bad {TOPIC}"))
+    code, out, err = run(pull, [], capsys)
+    assert code == 4 and TOPIC not in err
+
+
+def test_naive_or_garbage_due_does_not_poison_state(pull, link, home, token, monkeypatch, capsys):
+    body = ndjson(
+        caught("ab12cd34", "slides", due="2026-10-29T17:00:00", at=NOW),
+        caught("9f8e7d6c", "room", due="whenever-ish", at=NOW),
+    )
+    fake_urlopen(link, monkeypatch, body=body)
+    code, out, err = run(pull, ["--now", "2026-10-27T09:00:00-07:00"], capsys)
+    assert code == 0, err
+    # a naive time is read as UTC and kept. garbage becomes "no date". neither crashes, now or on the next run.
+    assert "(2026-10-29T17:00:00+00:00)" in out.splitlines()[1]
+    assert "due no date" in out.splitlines()[2]
+    code, out, err = run(pull, ["--now", "2026-10-27T09:00:00-07:00"], capsys)
+    assert code == 0
+
+
+def test_due_label_survives_naive_now(link):
+    assert link.due_label("2026-10-30T17:00:00-07:00", "2026-10-27T09:00:00").startswith("in ")
+    assert link.due_label("2026-10-30T17:00:00-07:00", "not a time") == "2026-10-30T17:00:00-07:00"
+
+
+def test_what_and_channel_are_trimmed_and_printable(link):
+    line = "receipt id=ab12cd34 what=" + "x" * 200 + "\tzz\x1b[31m due=none channel=chan\x07nel"
+    got = link.parse_line(line)
+    assert len(got["what"]) <= 140 and "\t" not in got["what"] and "\x1b" not in got["what"]
+    assert got["channel"] == "channel"
+
+
+def test_state_is_pruned(link):
+    week = 8 * 24 * 3600
+    state = {"receipts": {
+        "a1a1a1a1": {"what": "old done", "due": None, "channel": "c", "status": "done", "offered": True,
+                     "sos_sent": None, "first_seen": NOW - week * 2, "closed_at": NOW - week},
+        "b2b2b2b2": {"what": "fresh done", "due": None, "channel": "c", "status": "done", "offered": True,
+                     "sos_sent": None, "first_seen": NOW - 100, "closed_at": NOW - 50},
+        "c3c3c3c3": {"what": "old open", "due": None, "channel": "c", "status": "open", "offered": True,
+                     "sos_sent": None, "first_seen": NOW - week * 2},
+    }}
+    pruned = link.apply_messages(state, [], now_ts=NOW)["receipts"]
+    assert set(pruned) == {"b2b2b2b2", "c3c3c3c3"}
+
+
+def test_state_is_capped(link):
+    flood = [caught(f"{i:08x}", f"thing {i}", at=NOW - 1000 + i) for i in range(link.MAX_RECEIPTS + 20)]
+    receipts = link.apply_messages({"receipts": {}}, flood, now_ts=NOW)["receipts"]
+    assert len(receipts) == link.MAX_RECEIPTS
+    assert f"{link.MAX_RECEIPTS + 19:08x}" in receipts and "00000000" not in receipts
+
+
+def test_closing_records_closed_at(link):
+    receipts = link.apply_messages({"receipts": {}}, [caught("ab12cd34", "x", at=NOW - 5), event("ab12cd34", "done", at=NOW)])["receipts"]
+    assert receipts["ab12cd34"]["closed_at"] == NOW
+
+
+def test_sos_refuses_a_repeat_unless_asked_again(sos, link, home, token, monkeypatch, capsys):
+    seeded_state(link)
+    state = link.load_state()
+    state["receipts"]["ab12cd34"]["sos_sent"] = NOW
+    link.save_state(state)
+    calls = fake_urlopen(link, monkeypatch, body="{}")
+    code, out, err = run(sos, ["--id", "ab12cd34"], capsys)
+    assert code == 2 and "already" in err and calls == []
+    code, out, err = run(sos, ["--id", "ab12cd34", "--again"], capsys)
+    assert code == 0 and len(calls) == 1
+
+
+@pytest.mark.parametrize("status, code", [(401, 5), (403, 5), (404, 5), (429, 6), (408, 6)])
+def test_only_auth_style_4xx_blame_the_token(pull, link, home, token, monkeypatch, capsys, status, code):
+    fake_urlopen(link, monkeypatch, error=urllib.error.HTTPError("https://ntfy.sh/x", status, "x", {}, io.BytesIO(b"")))
+    got, out, err = run(pull, [], capsys)
+    assert got == code
+
+
+def test_sample_and_offered_do_not_mix(pull, home, capsys):
+    code, out, err = run(pull, ["--sample", "--offered", "ab12cd34"], capsys)
+    assert code == 2 and not (home / ".config").exists()
+
+
+def test_id_pattern_rejects_trailing_newline(link):
+    assert link.valid_id("ab12cd34") and not link.valid_id("ab12cd34\n")
+
+
+def test_save_state_is_atomic_and_private(link, home):
+    link.save_state({"receipts": {}})
+    path = link.state_path()
+    assert path.exists()
+    assert (path.stat().st_mode & 0o777) == 0o600
+    assert [p.name for p in path.parent.iterdir()] == ["state.json"]

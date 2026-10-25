@@ -6,6 +6,7 @@ import os
 import re
 import time
 from datetime import datetime, timedelta
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 import discord
@@ -469,6 +470,8 @@ async def handle_dm_reaction(payload, emoji: str) -> None:
         return
     if emoji == DONE_EMOJI:
         store.unlink_message(payload.message_id)
+        # answered. the ding escalation stands down for this one.
+        store.mark_acked(receipt.id)
         await dm(payload.user_id, voice.got_it())
         log.info("nudge_ack receipt=%s", receipt.id)
     elif emoji == HELP_EMOJI:
@@ -525,6 +528,36 @@ async def send_nudges(current: datetime) -> None:
             log.info("nudge_failed receipt=%s error=%s", receipt.id, type(error).__name__)
 
 
+async def send_last_calls(current: datetime) -> None:
+    """the ding's first step: one more dm, two hours before due, to people who opted in."""
+    for receipt in nudges.ding_due(store, current):
+        # mark it first, so a failure below can't make us ask twice.
+        store.mark_ding_sent(receipt.id, current)
+        try:
+            text = voice.ding_dm(receipt.what, nudges.when_label(receipt.due, current))
+            message = await dm(receipt.user_id, text, reactions=(DONE_EMOJI, HELP_EMOJI))
+            if message is not None:
+                store.link_message(message.id, "nudge", receipt.id)
+            log.info("last_call_sent receipt=%s", receipt.id)
+        except Exception as error:
+            log.info("last_call_failed receipt=%s error=%s", receipt.id, type(error).__name__)
+
+
+async def send_dings(current: datetime) -> None:
+    """the ding's second step: thirty quiet minutes later, cubbie hears. the channel only sees the bell."""
+    for receipt in nudges.ding_escalate(store, current):
+        store.mark_dinged(receipt.id)
+        await tell_cubbie(receipt.user_id, receipt.id, cubbie.ding_line(receipt))
+        log.info("ding_sent receipt=%s", receipt.id)
+        if not store.is_tracked(receipt.channel_id):
+            continue
+        try:
+            channel = await get_channel(receipt.channel_id)
+            await channel.send(voice.reminded_text())
+        except Exception as error:
+            log.info("ding_post_failed receipt=%s error=%s", receipt.id, type(error).__name__)
+
+
 async def post_awards(current: datetime) -> None:
     # save the week before sending, so one broken channel can't make us post again every 30s.
     store.last_awards_week = awards.week_key(current)
@@ -545,6 +578,8 @@ async def run_scheduler_once() -> None:
     """send nudges that are due and post awards on friday at 5."""
     current = now()
     await send_nudges(current)
+    await send_last_calls(current)
+    await send_dings(current)
     if awards.should_post(current, store.last_awards_week):
         await post_awards(current)
 
@@ -609,8 +644,11 @@ async def tick(ctx: commands.Context, hours: float):
     if not nudges.valid_tick_hours(hours):
         await ctx.send(voice.tick_bad_text())
         return
-    nudges.tick(store, hours)
-    await run_scheduler_once()
+    # the clock walks in half-hour steps and the scheduler runs after each one, so a big jump
+    # still fires the nudge, the last call and the ding in order.
+    for step in nudges.tick_steps(hours):
+        nudges.tick(store, step)
+        await run_scheduler_once()
     await ctx.send(voice.tick_text(hours, clock_label(now())))
     log.info("tick hours=%s", hours)
 
@@ -671,6 +709,19 @@ async def receipts_unlink(interaction: discord.Interaction):
         return
     await interaction.response.send_message(voice.unlink_text(), ephemeral=True)
     log.info("cubbie_unlinked user=%s", interaction.user.id)
+
+
+@receipts_group.command(name="ding", description="let cubbie hear when you go quiet right before something is due")
+@app_commands.describe(mode="on or off. off is the default")
+async def receipts_ding(interaction: discord.Interaction, mode: Literal["on", "off"]):
+    user_id = interaction.user.id
+    if mode == "on" and store.cubbie_topic(user_id) is None:
+        await interaction.response.send_message(voice.ding_needs_link_text(), ephemeral=True)
+        return
+    store.set_ding(user_id, mode == "on")
+    text = voice.ding_on_text() if mode == "on" else voice.ding_off_text()
+    await interaction.response.send_message(text, ephemeral=True)
+    log.info("ding_%s user=%s", mode, user_id)
 
 
 @receipts_group.command(name="board", description="who promised what")

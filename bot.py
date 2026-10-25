@@ -17,6 +17,7 @@ import cubbie
 import demo
 import detect
 import nudges
+import relay
 import voice
 from store import Store
 
@@ -27,6 +28,7 @@ GUILD_ID = os.environ.get("GUILD_ID", "")
 STATE_PATH = os.environ.get("STATE_PATH", "state.json")
 TZ = ZoneInfo(os.environ.get("TZ_NAME", "America/Phoenix"))
 DEMO_ROLE = os.environ.get("DEMO_ROLE", "receipts-demo")
+NTFY_URL = os.environ.get("NTFY_URL", relay.DEFAULT_BASE)
 
 
 def parse_user_ids(raw: str) -> frozenset[int]:
@@ -70,6 +72,7 @@ bot = commands.Bot(
     help_command=None,
 )
 store = Store(STATE_PATH)
+relay_client = relay.Relay(NTFY_URL)
 _name_cache: dict[int, str] = {}
 
 
@@ -123,6 +126,34 @@ def due_label(receipt) -> str:
     return nudges.when_label(receipt.due, now())
 
 
+# ---- cubbie link ----
+
+def channel_name(channel) -> str:
+    return getattr(channel, "name", None) or "unknown"
+
+
+async def tell_cubbie(user_id: int, receipt_id: str, line: str) -> None:
+    """post one line to the user's private topic, if they linked one. never raises, never logs the topic."""
+    topic = store.cubbie_topic(user_id)
+    if topic is None:
+        return
+    try:
+        await relay_client.post(topic, line)
+        log.info("cubbie_posted receipt=%s", receipt_id)
+    except Exception as error:
+        # the error text can hold the url, and the url is the topic. only the type is logged.
+        log.info("cubbie_post_failed receipt=%s error=%s", receipt_id, type(error).__name__)
+
+
+async def cubbie_caught(receipt, channel) -> None:
+    await tell_cubbie(receipt.user_id, receipt.id, cubbie.receipt_line(receipt, channel_name(channel)))
+
+
+async def cubbie_update(receipt, event: str, user_id: int | None = None) -> None:
+    owner = receipt.user_id if user_id is None else user_id
+    await tell_cubbie(owner, receipt.id, cubbie.update_line(receipt.id, event))
+
+
 # ---- catching promises ----
 
 async def handle_candidate(message: discord.Message, text: str, author_id: int) -> None:
@@ -132,10 +163,11 @@ async def handle_candidate(message: discord.Message, text: str, author_id: int) 
     promise = await asyncio.to_thread(detect.extract, text, author_id, now())
     if promise is None:
         return
-    store.add(author_id, promise["what"], promise["due"], message.channel.id,
-              message.id, message.jump_url, now())
+    receipt = store.add(author_id, promise["what"], promise["due"], message.channel.id,
+                        message.id, message.jump_url, now())
     await message.add_reaction(RECEIPT_EMOJI)
     log.info("promise_caught channel=%s message=%s user=%s", message.channel.id, message.id, author_id)
+    await cubbie_caught(receipt, message.channel)
 
 
 async def handle_undo_reply(message: discord.Message) -> bool:
@@ -149,6 +181,7 @@ async def handle_undo_reply(message: discord.Message) -> bool:
     await clear_receipt_reaction(message.channel, receipt.message_id)
     await message.reply(voice.undo_text())
     log.info("receipt_undone receipt=%s", receipt.id)
+    await cubbie_update(receipt, "removed")
     return True
 
 
@@ -207,16 +240,23 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     receipt = store.find_by_message(payload.message_id)
     if receipt is None or receipt.user_id != payload.user_id:
         return
+    await handle_receipt_reaction(payload, emoji, receipt)
+
+
+async def handle_receipt_reaction(payload, emoji: str, receipt) -> None:
+    """❌ or ✅ by the owner on their own receipted message."""
     channel = await get_channel(payload.channel_id)
     if emoji == UNDO_EMOJI:
         store.remove(receipt.id)
         await clear_receipt_reaction(channel, receipt.message_id)
         log.info("receipt_undone receipt=%s", receipt.id)
+        await cubbie_update(receipt, "removed")
     elif emoji == DONE_EMOJI and receipt.status == "open":
         store.mark_done(receipt.id, now())
         original = await channel.fetch_message(receipt.message_id)
         await original.add_reaction(ACK_EMOJI)
         log.info("receipt_done receipt=%s", receipt.id)
+        await cubbie_update(receipt, "done")
 
 
 async def handle_dm_reaction(payload, emoji: str) -> None:
@@ -258,6 +298,9 @@ async def handle_claim(payload, receipt_id: str) -> None:
     await dm(old_owner, voice.claimed_dm_old(claimer, receipt.what))
     await dm(payload.user_id, voice.claimed_dm_new(receipt.what, due_label(receipt)))
     log.info("receipt_claimed receipt=%s from=%s to=%s", receipt.id, old_owner, payload.user_id)
+    # the old owner's cubbie hears it moved on. the new owner's cubbie hears about it like a fresh receipt.
+    await cubbie_update(receipt, "reassigned", user_id=old_owner)
+    await cubbie_caught(receipt, channel)
 
 
 # ---- scheduler ----
@@ -445,6 +488,7 @@ async def done_command(interaction: discord.Interaction, what: str):
     store.mark_done(receipt.id, now())
     await interaction.response.send_message(voice.done_text(receipt.what))
     log.info("receipt_done receipt=%s", receipt.id)
+    await cubbie_update(receipt, "done")
 
 
 @bot.tree.command(name="awards", description="this week's receipts awards")

@@ -427,3 +427,136 @@ def test_unlink_when_not_linked(bot_module):
     interaction = FakeInteraction(1, 10)
     asyncio.run(bot_module.receipts_unlink.callback(interaction))
     assert interaction.calls == [("respond", bot_module.voice.unlink_none_text(), {"ephemeral": True})]
+
+
+# posting receipt events to cubbie
+
+
+class FakeRelay:
+    def __init__(self, broken=False):
+        self.posts = []
+        self.broken = broken
+
+    async def post(self, topic, line):
+        if self.broken:
+            raise RuntimeError(f"500 for https://ntfy.sh/{topic}")
+        self.posts.append((topic, line))
+
+
+def _chat_message(message_id=20, user_id=1, channel_id=10):
+    async def add_reaction(emoji):
+        return None
+    return NS(id=message_id, jump_url=f"https://discord.com/channels/1/{channel_id}/{message_id}",
+              channel=NS(id=channel_id, name="cse511"), author=NS(id=user_id), add_reaction=add_reaction)
+
+
+@pytest.fixture
+def linked(bot_module, monkeypatch):
+    fake = FakeRelay()
+    monkeypatch.setattr(bot_module, "relay_client", fake)
+    bot_module.store.link_cubbie(1, "receipts-topic-of-user-1")
+    bot_module.store.set_channel(10, True)
+    return fake
+
+
+def test_caught_promise_is_posted_to_cubbie(bot_module, linked, caplog):
+    with caplog.at_level(logging.INFO):
+        asyncio.run(bot_module.handle_candidate(_chat_message(), "ok I'll do the intro slides by thursday", 1))
+    receipt = bot_module.store.find_by_message(20)
+    assert receipt is not None
+    assert linked.posts == [("receipts-topic-of-user-1", bot_module.cubbie.receipt_line(receipt, "cse511"))]
+    assert linked.posts[0][1].endswith("channel=cse511")
+    assert f"cubbie_posted receipt={receipt.id}" in caplog.text
+    assert "topic-of-user-1" not in caplog.text
+
+
+def test_unlinked_user_is_not_posted(bot_module, linked):
+    asyncio.run(bot_module.handle_candidate(_chat_message(user_id=2), "ok I'll do the intro slides by thursday", 2))
+    assert bot_module.store.find_by_message(20) is not None
+    assert linked.posts == []
+
+
+def test_done_command_posts_an_update(bot_module, linked):
+    current = bot_module.now()
+    r = bot_module.store.add(1, "intro slides", None, 10, 20, "l", current)
+    asyncio.run(bot_module.done_command.callback(FakeInteraction(1, 10), "slides"))
+    assert linked.posts == [("receipts-topic-of-user-1", f"receipt id={r.id} event=done")]
+
+
+def test_done_reaction_posts_an_update(bot_module, linked, monkeypatch):
+    posted = []
+
+    async def get_channel(channel_id):
+        async def fetch_message(message_id):
+            async def add_reaction(emoji):
+                posted.append(emoji)
+            return NS(add_reaction=add_reaction)
+        return NS(id=channel_id, name="cse511", fetch_message=fetch_message)
+    monkeypatch.setattr(bot_module, "get_channel", get_channel)
+    current = bot_module.now()
+    r = bot_module.store.add(1, "intro slides", None, 10, 20, "l", current)
+    payload = NS(message_id=20, user_id=1, channel_id=10)
+    asyncio.run(bot_module.handle_receipt_reaction(payload, bot_module.DONE_EMOJI, r))
+    assert posted == [bot_module.ACK_EMOJI]
+    assert linked.posts == [("receipts-topic-of-user-1", f"receipt id={r.id} event=done")]
+
+
+def test_undo_reaction_posts_removed(bot_module, linked, monkeypatch):
+    async def clear(channel, message_id):
+        return None
+    monkeypatch.setattr(bot_module, "clear_receipt_reaction", clear)
+
+    async def get_channel(channel_id):
+        return NS(id=channel_id, name="cse511")
+    monkeypatch.setattr(bot_module, "get_channel", get_channel)
+    current = bot_module.now()
+    r = bot_module.store.add(1, "intro slides", None, 10, 20, "l", current)
+    payload = NS(message_id=20, user_id=1, channel_id=10)
+    asyncio.run(bot_module.handle_receipt_reaction(payload, bot_module.UNDO_EMOJI, r))
+    assert bot_module.store.get(r.id) is None
+    assert linked.posts == [("receipts-topic-of-user-1", f"receipt id={r.id} event=removed")]
+
+
+def test_undo_reply_posts_removed(bot_module, linked, monkeypatch):
+    async def clear(channel, message_id):
+        return None
+    monkeypatch.setattr(bot_module, "clear_receipt_reaction", clear)
+    replies = []
+
+    async def reply(text):
+        replies.append(text)
+    current = bot_module.now()
+    r = bot_module.store.add(1, "intro slides", None, 10, 20, "l", current)
+    message = NS(content="not a promise", reference=NS(message_id=20), author=NS(id=1),
+                 channel=NS(id=10, name="cse511"), reply=reply)
+    assert asyncio.run(bot_module.handle_undo_reply(message)) is True
+    assert linked.posts == [("receipts-topic-of-user-1", f"receipt id={r.id} event=removed")]
+
+
+def test_claim_tells_both_sides(bot_module, linked, monkeypatch):
+    bot_module.store.link_cubbie(2, "receipts-topic-of-user-2")
+    monkeypatch.setattr(bot_module, "dm", fake_dm([]))
+    monkeypatch.setattr(bot_module, "get_channel", fake_channels([]))
+
+    async def name_of(uid):
+        return {1: "Yash", 2: "Suraj"}[uid]
+    monkeypatch.setattr(bot_module, "name_of", name_of)
+    current = bot_module.now()
+    r = bot_module.store.add(1, "intro slides", None, 10, 20, "l", current)
+    bot_module.store.link_message(801, "help", r.id)
+    asyncio.run(bot_module.handle_claim(NS(message_id=801, user_id=2, channel_id=10), r.id))
+    updated = bot_module.store.get(r.id)
+    assert updated.user_id == 2
+    assert linked.posts[0] == ("receipts-topic-of-user-1", f"receipt id={r.id} event=reassigned")
+    assert linked.posts[1][0] == "receipts-topic-of-user-2"
+    assert linked.posts[1][1].startswith(f"receipt id={r.id} what=intro slides due=none channel=")
+
+
+def test_cubbie_post_failure_logs_type_only_and_flow_continues(bot_module, linked, caplog):
+    linked.broken = True
+    with caplog.at_level(logging.INFO):
+        asyncio.run(bot_module.handle_candidate(_chat_message(), "ok I'll do the intro slides by thursday", 1))
+    receipt = bot_module.store.find_by_message(20)
+    assert receipt is not None
+    assert f"cubbie_post_failed receipt={receipt.id} error=RuntimeError" in caplog.text
+    assert "topic-of-user-1" not in caplog.text and "ntfy.sh" not in caplog.text

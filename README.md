@@ -49,7 +49,7 @@ Built for the Cubbie Hackathon, Track 3: an AI that joins a group chat and makes
 | Your user id in a skip list after `/forgetme`, so a later backfill never re-reads your old messages | |
 | One message id per channel: the newest one the last backfill looked at, so nothing is proposed twice | The messages themselves. A backfill proposal lives in memory until ✅ or ❌ |
 
-State lives in one JSON file (`state.json`) written atomically. `/forgetme` deletes everything the bot has on you. `/receipts off` stops tracking a channel. Nudges go by DM. Overdue items are never posted in the channel. When you run `/receipts board` you see only your own overdue items, in a reply only you can see.
+State lives in one JSON file (`state.json`) written atomically on a background thread, so a slow disk never delays a reply. `/forgetme` deletes everything the bot has on you. `/receipts off` stops tracking a channel. Nudges go by DM. Overdue items are never posted in the channel. When you run `/receipts board` you see only your own overdue items, in a reply only you can see.
 
 ## Setup
 

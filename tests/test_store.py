@@ -252,3 +252,121 @@ def test_has_help_post(tmp_store, now):
     assert tmp_store.has_help_post(r.id) is True
     tmp_store.unlink_message(802)
     assert tmp_store.has_help_post(r.id) is False
+
+
+# ---- background writes. the bot uses these so a save never blocks the event loop.
+
+
+def test_background_writes_land_in_order_and_wait_blocks_until_done(tmp_path, now):
+    import threading
+
+    import store as store_module
+
+    path = tmp_path / "state.json"
+    s = Store(path, background=True)
+    seen = []
+    release = threading.Event()
+    real_write = store_module.write_state
+
+    def gated_write(target, data):
+        release.wait(timeout=5)
+        real_write(target, data)
+        seen.append(len(data["receipts"]))
+
+    store_module.write_state = gated_write
+    try:
+        first = make(s, now)
+        second = make(s, now, what="second one", msg=200)
+        assert seen == []
+        release.set()
+        s.wait()
+    finally:
+        store_module.write_state = real_write
+    assert seen == [1, 2]
+    assert [r.id for r in Store(path).all_receipts()] == [first.id, second.id]
+    s.close()
+
+
+def test_flushed_raises_when_the_write_failed(tmp_path, now):
+    import asyncio
+
+    import store as store_module
+
+    s = Store(tmp_path / "state.json", background=True)
+    real_write = store_module.write_state
+
+    def boom(target, data):
+        raise OSError("disk died")
+
+    store_module.write_state = boom
+    try:
+        make(s, now)
+        with pytest.raises(OSError):
+            asyncio.run(s.flushed())
+    finally:
+        store_module.write_state = real_write
+    s.close()
+
+
+def test_default_store_writes_inline(tmp_path, now):
+    s = Store(tmp_path / "state.json")
+    make(s, now)
+    assert Store(tmp_path / "state.json").all_receipts()
+    s.wait()
+    s.close()
+
+
+def test_flushed_reports_a_failure_once(tmp_path, now):
+    """a later flush that queued nothing new must not trip over the old error."""
+    import asyncio
+
+    import store as store_module
+
+    s = Store(tmp_path / "state.json", background=True)
+    real_write = store_module.write_state
+    store_module.write_state = lambda target, data: (_ for _ in ()).throw(OSError("disk died"))
+    try:
+        make(s, now)
+        with pytest.raises(OSError):
+            asyncio.run(s.flushed())
+        asyncio.run(s.flushed())
+    finally:
+        store_module.write_state = real_write
+    s.close()
+
+
+def test_cancelling_a_waiter_does_not_cancel_the_write(tmp_path, now):
+    import asyncio
+    import threading
+
+    import store as store_module
+
+    path = tmp_path / "state.json"
+    s = Store(path, background=True)
+    release = threading.Event()
+    real_write = store_module.write_state
+
+    def gated_write(target, data):
+        release.wait(timeout=5)
+        real_write(target, data)
+
+    store_module.write_state = gated_write
+    try:
+        # the first save occupies the worker, so the second is still queued when its waiter is cancelled.
+        make(s, now)
+        second = make(s, now, what="second one", msg=200)
+
+        async def scenario():
+            waiter = asyncio.create_task(s.flushed())
+            await asyncio.sleep(0.01)
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+            release.set()
+            await s.flushed()
+
+        asyncio.run(scenario())
+    finally:
+        store_module.write_state = real_write
+    assert second.id in [r.id for r in Store(path).all_receipts()]
+    s.close()

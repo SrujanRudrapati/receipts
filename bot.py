@@ -1,6 +1,7 @@
 # discord wiring for receipts. the real logic lives in the small modules.
 # this file only moves data between discord and them.
 import asyncio
+import functools
 import logging
 import os
 import re
@@ -80,7 +81,8 @@ bot = commands.Bot(
     allowed_mentions=discord.AllowedMentions.none(),
     help_command=None,
 )
-store = Store(STATE_PATH)
+# background: the json write runs on its own thread so a save never holds the event loop.
+store = Store(STATE_PATH, background=True)
 relay_client = relay.Relay(NTFY_URL)
 _name_cache: dict[int, str] = {}
 _cubbie_cursors: dict[str, cubbie.Cursor] = {}
@@ -91,6 +93,28 @@ _pending_backfill: dict[int, dict] = {}
 def now() -> datetime:
     """current time in TZ, shifted by the demo clock."""
     return nudges.demo_now(store, datetime.now(TZ))
+
+
+async def persist(change, *args):
+    """apply one store change, then wait for it to reach disk without holding the loop.
+    the reply only goes out once the change is safe, and a failed write raises here."""
+    result = change(*args)
+    await store.flushed()
+    return result
+
+
+def timed(handler):
+    """log how long a slash command took, from the handler starting to its last reply.
+    goes closest to the function: discord.py reads the real signature through __wrapped__."""
+    @functools.wraps(handler)
+    async def wrapper(interaction: discord.Interaction, *args, **kwargs):
+        started = time.monotonic()
+        try:
+            return await handler(interaction, *args, **kwargs)
+        finally:
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            log.info("command=%s user=%s ms=%s", handler.__name__, interaction.user.id, elapsed_ms)
+    return wrapper
 
 
 async def name_of(user_id: int) -> str:
@@ -695,60 +719,74 @@ receipts_group = app_commands.Group(
 )
 
 
+# every handler that saves state or touches the network defers first. discord drops the
+# interaction after 3 seconds, and the real reply goes out as a followup.
+
+
 @receipts_group.command(name="on", description="start catching promises here")
+@timed
 async def receipts_on(interaction: discord.Interaction):
-    store.set_channel(interaction.channel_id, True)
-    await interaction.response.send_message(voice.on_text())
+    await interaction.response.defer()
+    await persist(store.set_channel, interaction.channel_id, True)
+    await interaction.followup.send(voice.on_text())
     log.info("channel_on channel=%s", interaction.channel_id)
     await propose_backfill(interaction.channel, interaction.user.id)
 
 
 @receipts_group.command(name="off", description="stop catching promises here")
+@timed
 async def receipts_off(interaction: discord.Interaction):
-    store.set_channel(interaction.channel_id, False)
-    await interaction.response.send_message(voice.off_text())
+    await interaction.response.defer()
+    await persist(store.set_channel, interaction.channel_id, False)
+    await interaction.followup.send(voice.off_text())
     log.info("channel_off channel=%s", interaction.channel_id)
 
 
 @receipts_group.command(name="link", description="connect cubbie to your receipts")
+@timed
 async def receipts_link(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
     # the topic works like a password. it goes out by dm, and is only saved once the dm worked.
     topic = cubbie.new_topic()
     sent = await dm(interaction.user.id, voice.link_dm(topic))
     if sent is None:
-        await interaction.response.send_message(voice.link_dm_failed(), ephemeral=True)
+        await interaction.followup.send(voice.link_dm_failed(), ephemeral=True)
         log.info("cubbie_link_dm_failed user=%s", interaction.user.id)
         return
-    store.link_cubbie(interaction.user.id, topic)
-    await interaction.response.send_message(voice.link_reply(), ephemeral=True)
+    await persist(store.link_cubbie, interaction.user.id, topic)
+    await interaction.followup.send(voice.link_reply(), ephemeral=True)
     log.info("cubbie_linked user=%s", interaction.user.id)
 
 
 @receipts_group.command(name="unlink", description="disconnect cubbie from your receipts")
+@timed
 async def receipts_unlink(interaction: discord.Interaction):
-    if not store.unlink_cubbie(interaction.user.id):
-        await interaction.response.send_message(voice.unlink_none_text(), ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    if not await persist(store.unlink_cubbie, interaction.user.id):
+        await interaction.followup.send(voice.unlink_none_text(), ephemeral=True)
         return
-    await interaction.response.send_message(voice.unlink_text(), ephemeral=True)
+    await interaction.followup.send(voice.unlink_text(), ephemeral=True)
     log.info("cubbie_unlinked user=%s", interaction.user.id)
 
 
 @receipts_group.command(name="ding", description="let cubbie hear when you go quiet right before something is due")
 @app_commands.describe(mode="on or off. off is the default")
+@timed
 async def receipts_ding(interaction: discord.Interaction, mode: Literal["on", "off"]):
+    await interaction.response.defer(ephemeral=True)
     user_id = interaction.user.id
     if mode == "on" and store.cubbie_topic(user_id) is None:
-        await interaction.response.send_message(voice.ding_needs_link_text(), ephemeral=True)
+        await interaction.followup.send(voice.ding_needs_link_text(), ephemeral=True)
         return
-    store.set_ding(user_id, mode == "on")
+    await persist(store.set_ding, user_id, mode == "on")
     text = voice.ding_on_text() if mode == "on" else voice.ding_off_text()
-    await interaction.response.send_message(text, ephemeral=True)
+    await interaction.followup.send(text, ephemeral=True)
     log.info("ding_%s user=%s", mode, user_id)
 
 
 @receipts_group.command(name="board", description="who promised what")
+@timed
 async def receipts_board(interaction: discord.Interaction):
-    # defer first. looking up names can take longer than discord's 3 second window.
     await interaction.response.defer()
     groups = store.board(interaction.channel_id, now())
     names = await names_for(groups.keys())
@@ -773,13 +811,17 @@ def open_list_to_close(channel_id: int, what: str | None):
 
 @list_group.command(name="close", description="lock a sign-up list")
 @app_commands.describe(what="a few words from the list title. leave it out for the newest one")
+@timed
 async def list_close(interaction: discord.Interaction, what: str | None = None):
+    # the lookup is in memory. it runs before the defer because the defer fixes who sees the reply:
+    # the channel on success, only the asker when there is nothing to close.
     lst = open_list_to_close(interaction.channel_id, what)
+    await interaction.response.defer(ephemeral=lst is None)
     if lst is None:
-        await interaction.response.send_message(voice.list_none_text(), ephemeral=True)
+        await interaction.followup.send(voice.list_none_text(), ephemeral=True)
         return
-    store.close_list(lst.id)
-    await interaction.response.send_message(voice.list_closed_text(lst.title, len(lst.entries)))
+    await persist(store.close_list, lst.id)
+    await interaction.followup.send(voice.list_closed_text(lst.title, len(lst.entries)))
     log.info("list_closed list=%s", lst.id)
     await refresh_list_post(lst)
 
@@ -787,35 +829,42 @@ async def list_close(interaction: discord.Interaction, what: str | None = None):
 @bot.tree.command(name="done", description="mark one of your promises done")
 @app_commands.guild_only()
 @app_commands.describe(what="a few words from the promise")
+@timed
 async def done_command(interaction: discord.Interaction, what: str):
+    # same shape as list close: an in-memory lookup decides who sees the reply, then the defer.
     receipt = store.find_open(interaction.user.id, interaction.channel_id, what)
+    await interaction.response.defer(ephemeral=receipt is None)
     if receipt is None:
-        await interaction.response.send_message(voice.not_found_text(), ephemeral=True)
+        await interaction.followup.send(voice.not_found_text(), ephemeral=True)
         return
-    store.mark_done(receipt.id, now())
-    await interaction.response.send_message(voice.done_text(receipt.what))
+    await persist(store.mark_done, receipt.id, now())
+    await interaction.followup.send(voice.done_text(receipt.what))
     log.info("receipt_done receipt=%s", receipt.id)
     await cubbie_update(receipt, "done")
 
 
 @bot.tree.command(name="awards", description="this week's receipts awards")
 @app_commands.guild_only()
+@timed
 async def awards_command(interaction: discord.Interaction):
     await interaction.response.defer()
     await interaction.followup.send(await awards_message(now(), interaction.channel_id))
 
 
 @bot.tree.command(name="forgetme", description="delete everything receipts has on you")
+@timed
 async def forgetme_command(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
     started, joined = store.lists_touching(interaction.user.id)
-    count = store.forget(interaction.user.id)
+    count = await persist(store.forget, interaction.user.id)
     _name_cache.pop(interaction.user.id, None)
-    await interaction.response.send_message(voice.forgot_text(count), ephemeral=True)
+    await interaction.followup.send(voice.forgot_text(count), ephemeral=True)
     log.info("forget user=%s count=%s", interaction.user.id, count)
     await scrub_list_posts(started, joined)
 
 
 @bot.tree.command(name="help", description="how receipts works")
+@timed
 async def help_command(interaction: discord.Interaction):
     await interaction.response.send_message(voice.help_text(), ephemeral=True)
 
@@ -840,6 +889,8 @@ async def main() -> None:
             await bot.start(TOKEN)
         finally:
             await relay_client.close()
+            # lets any queued state write land before the process goes away.
+            store.close()
 
 
 if __name__ == "__main__":

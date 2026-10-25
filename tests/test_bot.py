@@ -385,8 +385,9 @@ def test_link_dms_the_token_and_stores_it(bot_module, monkeypatch, caplog):
     topic = sent[0][1].splitlines()[-1]
     assert topic.startswith("receipts-") and len(topic) == len("receipts-") + 16
     assert bot_module.store.cubbie_topic(1) == topic
-    kind, text, kwargs = interaction.calls[0]
-    assert kind == "respond" and kwargs == {"ephemeral": True}
+    assert interaction.calls[0] == ("defer", None, {"ephemeral": True})
+    kind, text, kwargs = interaction.calls[1]
+    assert kind == "followup" and kwargs == {"ephemeral": True}
     assert topic not in text
     assert "cubbie_linked user=1" in caplog.text
     assert topic not in caplog.text
@@ -410,7 +411,8 @@ def test_link_stores_nothing_when_dm_fails(bot_module, monkeypatch, caplog):
     with caplog.at_level(logging.INFO):
         asyncio.run(bot_module.receipts_link.callback(interaction))
     assert bot_module.store.cubbie_topic(1) is None
-    assert interaction.calls == [("respond", bot_module.voice.link_dm_failed(), {"ephemeral": True})]
+    assert interaction.calls == [("defer", None, {"ephemeral": True}),
+                                 ("followup", bot_module.voice.link_dm_failed(), {"ephemeral": True})]
     assert "cubbie_link_dm_failed user=1" in caplog.text
     assert "cubbie_linked" not in caplog.text
 
@@ -421,7 +423,8 @@ def test_unlink_removes_the_token(bot_module, caplog):
     with caplog.at_level(logging.INFO):
         asyncio.run(bot_module.receipts_unlink.callback(interaction))
     assert bot_module.store.cubbie_topic(1) is None
-    assert interaction.calls == [("respond", bot_module.voice.unlink_text(), {"ephemeral": True})]
+    assert interaction.calls == [("defer", None, {"ephemeral": True}),
+                                 ("followup", bot_module.voice.unlink_text(), {"ephemeral": True})]
     assert "cubbie_unlinked user=1" in caplog.text
     assert "abcdefghijklmnop" not in caplog.text
 
@@ -429,7 +432,8 @@ def test_unlink_removes_the_token(bot_module, caplog):
 def test_unlink_when_not_linked(bot_module):
     interaction = FakeInteraction(1, 10)
     asyncio.run(bot_module.receipts_unlink.callback(interaction))
-    assert interaction.calls == [("respond", bot_module.voice.unlink_none_text(), {"ephemeral": True})]
+    assert interaction.calls == [("defer", None, {"ephemeral": True}),
+                                 ("followup", bot_module.voice.unlink_none_text(), {"ephemeral": True})]
 
 
 # posting receipt events to cubbie

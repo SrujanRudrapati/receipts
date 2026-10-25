@@ -210,7 +210,7 @@ def test_close_command_locks_the_newest_open_list(bot_module, wired):
     asyncio.run(bot_module.list_close.callback(interaction, None))
     lst = bot_module.store.find_list_by_starter(20)
     assert lst.status == "closed"
-    assert interaction.calls == [("respond", "closed potluck friday. 1 in.", {})]
+    assert interaction.calls == [("defer", None, {"ephemeral": False}), ("followup", "closed potluck friday. 1 in.", {})]
     assert wired.posts[9001].edits[-1] == "📋 potluck friday (closed)\n1. Suraj"
     handled, _ = join(bot_module, wired, "me", 3, 22)
     assert handled is False
@@ -228,7 +228,8 @@ def test_close_command_picks_a_list_by_words(bot_module, wired):
 def test_close_command_with_nothing_open(bot_module, wired):
     interaction = FakeInteraction(1, 10)
     asyncio.run(bot_module.list_close.callback(interaction, None))
-    assert interaction.calls == [("respond", bot_module.voice.list_none_text(), {"ephemeral": True})]
+    assert interaction.calls == [("defer", None, {"ephemeral": True}),
+                                 ("followup", bot_module.voice.list_none_text(), {"ephemeral": True})]
 
 
 def test_board_shows_lists_and_list_receipts(bot_module, wired):

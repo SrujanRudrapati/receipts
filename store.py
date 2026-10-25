@@ -1,11 +1,18 @@
 # json backed state for the bot. one file, saved after every change.
+# with background=True the write happens on one worker thread, in order, so the
+# event loop never waits on fsync. the in-memory change is always immediate.
+import asyncio
 import json
+import logging
 import os
 import re
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
+
+log = logging.getLogger("receipts")
 
 MAX_WHAT = 140
 MIN_WORD = 3
@@ -86,9 +93,31 @@ def words(text: str) -> set[str]:
     return {w for w in found if len(w) >= MIN_WORD and w not in STOPWORDS}
 
 
+def write_state(path: Path, data: dict) -> None:
+    """write one snapshot atomically: temp file, fsync, then swap into place."""
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w") as f:
+        f.write(json.dumps(data, indent=2))
+        # push it to disk before the swap, so a power cut can't leave an empty file.
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def _log_write_failure(future: Future) -> None:
+    if future.cancelled():
+        return
+    error = future.exception()
+    if error is not None:
+        # the path is not secret, but the policy is the same everywhere: type only.
+        log.info("state_write_failed error=%s", type(error).__name__)
+
+
 class Store:
-    def __init__(self, path):
+    def __init__(self, path, background: bool = False):
         self.path = Path(path)
+        self._writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="state") if background else None
+        self._last_write: Future | None = None
         self._receipts: dict[str, Receipt] = {}
         self._channels: set[int] = set()
         self._links: dict[int, tuple[str, str]] = {}
@@ -120,8 +149,8 @@ class Store:
         self._backfill_marks = {int(k): v for k, v in data.get("backfill_marks", {}).items()}
         self._ding = set(data.get("ding_users", []))
 
-    def save(self) -> None:
-        data = {
+    def snapshot(self) -> dict:
+        return {
             "receipts": [r.to_dict() for r in self._receipts.values()],
             "tracked_channels": sorted(self._channels),
             "links": {str(k): list(v) for k, v in self._links.items()},
@@ -133,13 +162,38 @@ class Store:
             "backfill_marks": {str(k): v for k, v in self._backfill_marks.items()},
             "ding_users": sorted(self._ding),
         }
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        with open(tmp, "w") as f:
-            f.write(json.dumps(data, indent=2))
-            # push it to disk before the swap, so a power cut can't leave an empty file.
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, self.path)
+
+    def save(self) -> None:
+        """inline by default. in background mode the snapshot is taken now and written on the worker."""
+        data = self.snapshot()
+        if self._writer is None:
+            write_state(self.path, data)
+            return
+        self._last_write = self._writer.submit(write_state, self.path, data)
+        self._last_write.add_done_callback(_log_write_failure)
+
+    async def flushed(self) -> None:
+        """wait for the newest queued write to land. raises what the write raised, once: the
+        error goes to whoever was waiting on that write, then is cleared so a later call that
+        queued nothing new does not trip over it. cancelling the waiter never cancels the write."""
+        future = self._last_write
+        if future is None:
+            return
+        try:
+            await asyncio.shield(asyncio.wrap_future(future))
+        except Exception:
+            if self._last_write is future:
+                self._last_write = None
+            raise
+
+    def wait(self) -> None:
+        """block until the newest queued write has landed. for shutdown and tests."""
+        if self._last_write is not None:
+            self._last_write.result()
+
+    def close(self) -> None:
+        if self._writer is not None:
+            self._writer.shutdown(wait=True)
 
     # receipts
 

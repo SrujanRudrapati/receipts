@@ -126,7 +126,7 @@ def test_on_proposes_and_stores_nothing_yet(bot_module, wired, caplog):
     with caplog.at_level(logging.INFO):
         channel, interaction = turn_on(bot_module, messages)
     assert channel.limits == [200]
-    assert interaction.calls == [("respond", bot_module.voice.on_text(), {})]
+    assert interaction.calls == [("defer", None, {}), ("followup", bot_module.voice.on_text(), {})]
     assert channel.sent == ["found 2 promises from this week:\n"
                             "Srujan: do the slides (due no date)\n"
                             "Yash: book the room (due no date)\n"

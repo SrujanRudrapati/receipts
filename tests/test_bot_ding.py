@@ -42,7 +42,8 @@ def advance(bot_module, hours):
 def test_ding_on_needs_a_link(bot_module):
     interaction = FakeInteraction(2, 10)
     asyncio.run(bot_module.receipts_ding.callback(interaction, "on"))
-    assert interaction.calls == [("respond", bot_module.voice.ding_needs_link_text(), {"ephemeral": True})]
+    assert interaction.calls == [("defer", None, {"ephemeral": True}),
+                                 ("followup", bot_module.voice.ding_needs_link_text(), {"ephemeral": True})]
     assert bot_module.store.ding_on(2) is False
 
 
@@ -51,11 +52,11 @@ def test_ding_on_and_off(bot_module, caplog):
     on, off = FakeInteraction(2, 10), FakeInteraction(2, 10)
     with caplog.at_level(logging.INFO):
         asyncio.run(bot_module.receipts_ding.callback(on, "on"))
-    assert on.calls == [("respond", bot_module.voice.ding_on_text(), {"ephemeral": True})]
+    assert on.calls == [("defer", None, {"ephemeral": True}), ("followup", bot_module.voice.ding_on_text(), {"ephemeral": True})]
     assert bot_module.store.ding_on(2) is True
     assert "ding_on user=2" in caplog.text
     asyncio.run(bot_module.receipts_ding.callback(off, "off"))
-    assert off.calls == [("respond", bot_module.voice.ding_off_text(), {"ephemeral": True})]
+    assert off.calls == [("defer", None, {"ephemeral": True}), ("followup", bot_module.voice.ding_off_text(), {"ephemeral": True})]
     assert bot_module.store.ding_on(2) is False
 
 
@@ -227,3 +228,73 @@ def test_last_call_that_cannot_be_delivered_does_not_escalate(bot_module, wired,
     assert f"last_call_dm_failed receipt={r.id}" in caplog.text
     advance(bot_module, 0.5)
     assert wired.relay.posts == [] and wired.posted == []
+
+
+# ---- the 3 second clock. discord drops the interaction if nothing answers in time.
+
+
+def test_ding_defers_before_doing_work(bot_module, monkeypatch):
+    """the first thing ding sends is a defer. the state save happens after it."""
+    bot_module.store.link_cubbie(2, "receipts-topic-of-user-2")
+    interaction = FakeInteraction(2, 10)
+    real_set_ding = bot_module.store.set_ding
+
+    def set_ding(user_id, on):
+        interaction.calls.append(("work", "set_ding", {}))
+        real_set_ding(user_id, on)
+
+    monkeypatch.setattr(bot_module.store, "set_ding", set_ding)
+    asyncio.run(bot_module.receipts_ding.callback(interaction, "on"))
+    assert interaction.calls == [
+        ("defer", None, {"ephemeral": True}),
+        ("work", "set_ding", {}),
+        ("followup", bot_module.voice.ding_on_text(), {"ephemeral": True}),
+    ]
+
+
+def test_ding_keeps_the_loop_free_while_the_disk_is_busy(bot_module, monkeypatch):
+    """a slow state write never holds the event loop. the defer is out at once, other work keeps
+    running, and the reply follows once the write has landed."""
+    import threading
+
+    import store as store_module
+
+    bot_module.store.link_cubbie(2, "receipts-topic-of-user-2")
+    bot_module.store.wait()
+    release, landed = threading.Event(), []
+    real_write = store_module.write_state
+
+    def slow_write(path, data):
+        release.wait(timeout=5)
+        real_write(path, data)
+        landed.append(sorted(data["ding_users"]))
+
+    monkeypatch.setattr(store_module, "write_state", slow_write)
+    interaction = FakeInteraction(2, 10)
+
+    async def scenario():
+        handler = asyncio.create_task(bot_module.receipts_ding.callback(interaction, "on"))
+        ticks = 0
+        for _ in range(20):
+            await asyncio.sleep(0.005)
+            ticks += 1
+        # the loop turned 20 times while the write was held, and the defer went out first thing.
+        assert ticks == 20
+        assert interaction.calls == [("defer", None, {"ephemeral": True})]
+        assert landed == []
+        release.set()
+        await handler
+
+    asyncio.run(scenario())
+    assert interaction.calls[-1] == ("followup", bot_module.voice.ding_on_text(), {"ephemeral": True})
+    assert landed == [[2]]
+    assert store_module.Store(bot_module.store.path).ding_on(2) is True
+
+
+def test_ding_logs_how_long_it_took(bot_module, caplog):
+    bot_module.store.link_cubbie(2, "receipts-topic-of-user-2")
+    with caplog.at_level(logging.INFO):
+        asyncio.run(bot_module.receipts_ding.callback(FakeInteraction(2, 10), "on"))
+    timing = [r.getMessage() for r in caplog.records if r.getMessage().startswith("command=receipts_ding")]
+    assert len(timing) == 1
+    assert "user=2" in timing[0] and " ms=" in timing[0]

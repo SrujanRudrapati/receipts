@@ -615,3 +615,15 @@ def test_skill_md_reports_changes_plainly():
     head, text = frontmatter()
     assert "`changed <count>`" in text
     assert "off your plate" in text
+
+
+def test_skill_md_ding_text_offers_a_slot_and_the_help_word():
+    """one short text: the promise and due time, one free 30-minute slot from the calendar, the help word.
+    a call only for students who opted in, and nothing on the calendar before a yes."""
+    head, text = frontmatter()
+    flow = text.split("## Flow 4: a ding", 1)[1].split("## Replies", 1)[0]
+    assert "want me to block 3:30-4pm" in flow
+    assert "or say 'help' and I'll ask the group for a hand" in flow
+    assert "only if" in flow and "opted into calls" in flow
+    assert "Google Calendar" in flow and "30-minute" in flow
+    assert "only after the student says yes" in flow

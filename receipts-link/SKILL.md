@@ -142,11 +142,18 @@ The student can turn this on in Discord with `/receipts ding on`. It is off by d
 
 When a pull shows a `ding` line:
 
-1. Text the student right away, one message: "receipts says <what> is due <when> and hasn't heard back. still on it?"
-2. If the student has opted into calls (flow 2), place a phone check-in now, not tonight. On the call: ask if it is on track. Then look at their Google Calendar between now and the due time and offer one 30-minute block: "want me to block <time> for it?" Ask before adding the block. Add it to the calendar only after the student says yes, named after the promise, with no token and no receipt id in it.
-3. If the student has not opted into calls, offer the same 30-minute block by text, and ask before adding it.
-4. If the student says it is not going to happen, go to flow 3 and offer to ask the group for a hand.
-5. Whatever the student says, run:
+1. Look at the student's Google Calendar between now and the due time and pick one free 30-minute slot, the nearest one that leaves time to finish before it is due. If Google Calendar is not connected, pick a slot soon and say you could not check.
+2. Text the student right away, one short message. Name the promise and the due time, offer that one slot, and give them the help word:
+
+   ```
+   receipts says intro slides is due today at 5pm and hasn't heard back. still on it? want me to block 3:30-4pm for it? or say 'help' and I'll ask the group for a hand.
+   ```
+
+   That is the whole text. No reason, no second question.
+3. Add the block to the calendar only after the student says yes, named after the promise, with no token and no receipt id in it. Never add it on your own.
+4. Place a phone check-in only if the student opted into calls in flow 2, and then now, not tonight. On the call: ask if it is on track and offer the same slot. If they have not opted into calls, the text is the whole check-in. Do not offer a call here.
+5. If the student says help, or that it is not going to happen, go to flow 3 and ask the group for a hand.
+6. Whatever the student says, run:
 
    ```bash
    RECEIPTS_LINK_TOKEN="$RECEIPTS_LINK_TOKEN" python3 scripts/pull.py --dinged <id>
@@ -179,7 +186,7 @@ sent. the bot will ask your group, and whoever reacts first picks it up. I'll te
 ```
 
 ```
-receipts says intro slides is due today at 5pm and hasn't heard back. still on it? I can block 3 to 3:30 for it if that helps.
+receipts says intro slides is due today at 5pm and hasn't heard back. still on it? want me to block 3:30-4pm for it? or say 'help' and I'll ask the group for a hand.
 ```
 
 ## Trying it without a token

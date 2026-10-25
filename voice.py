@@ -237,6 +237,22 @@ def demo_denied_text():
     return "only demo runners can do this."
 
 
+# backfill on /receipts on. the proposal says how many, never what.
+
+def backfill_proposal_text(count):
+    if count == 1:
+        return "found 1 promise from this week. keep it?"
+    return f"found {count} promises from this week. keep them?"
+
+
+def backfill_kept_text(count):
+    return f"kept {_count(count, 'receipt', 'receipts')}."
+
+
+def backfill_dropped_text():
+    return "ok, dropped them. nothing stored."
+
+
 # cubbie link. the token goes by dm only, and the channel replies never repeat it.
 
 def link_dm(topic):

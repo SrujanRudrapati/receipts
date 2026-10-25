@@ -14,6 +14,7 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 import awards
+import backfill
 import cubbie
 import demo
 import detect
@@ -82,6 +83,8 @@ store = Store(STATE_PATH)
 relay_client = relay.Relay(NTFY_URL)
 _name_cache: dict[int, str] = {}
 _cubbie_cursors: dict[str, cubbie.Cursor] = {}
+# backfill proposals waiting for ✅ or ❌, by proposal message id. memory only: nothing is stored until ✅.
+_pending_backfill: dict[int, dict] = {}
 
 
 def now() -> datetime:
@@ -251,6 +254,63 @@ async def handle_who(message: discord.Message) -> bool:
     return True
 
 
+# ---- backfill on /receipts on ----
+
+async def propose_backfill(channel, user_id: int) -> None:
+    """scan recent messages and ask once whether to keep what was found. stores nothing until ✅."""
+    try:
+        messages = [m async for m in channel.history(limit=backfill.HISTORY_LIMIT)]
+    except Exception as error:
+        log.info("backfill_failed channel=%s error=%s", channel.id, type(error).__name__)
+        return
+    mark = store.backfill_mark(channel.id)
+    candidates = await asyncio.to_thread(backfill.scan, messages, store, now(), mark)
+    # the mark moves even on ❌, so the same messages are never proposed again.
+    store.set_backfill_mark(channel.id, max(mark, backfill.newest_id(messages)))
+    if not candidates:
+        return
+    post = await channel.send(voice.backfill_proposal_text(len(candidates)))
+    for emoji in (DONE_EMOJI, UNDO_EMOJI):
+        await post.add_reaction(emoji)
+    _pending_backfill[post.id] = {"user_id": user_id, "channel": channel, "candidates": candidates}
+    log.info("backfill_proposed channel=%s count=%s", channel.id, len(candidates))
+
+
+async def keep_backfill(channel, candidates: list[dict]) -> int:
+    kept = 0
+    for c in candidates:
+        if store.find_by_message(c["message_id"]) is not None:
+            continue
+        receipt = store.add(c["user_id"], c["what"], c["due"], c["channel_id"], c["message_id"],
+                            c["message_link"], now())
+        kept += 1
+        try:
+            original = await channel.fetch_message(c["message_id"])
+            await original.add_reaction(RECEIPT_EMOJI)
+        except discord.HTTPException:
+            log.info("reaction_failed message=%s", c["message_id"])
+        log.info("promise_caught channel=%s message=%s user=%s backfill=1",
+                 c["channel_id"], c["message_id"], c["user_id"])
+        await cubbie_caught(receipt, channel)
+    return kept
+
+
+async def handle_backfill_reaction(payload, emoji: str) -> None:
+    """✅ or ❌ on a backfill proposal, by the person who turned the channel on."""
+    pending = _pending_backfill.get(payload.message_id)
+    if pending is None or pending["user_id"] != payload.user_id or emoji not in (DONE_EMOJI, UNDO_EMOJI):
+        return
+    del _pending_backfill[payload.message_id]
+    channel = pending["channel"]
+    if emoji == UNDO_EMOJI:
+        await channel.send(voice.backfill_dropped_text())
+        log.info("backfill_dropped channel=%s", channel.id)
+        return
+    kept = await keep_backfill(channel, pending["candidates"])
+    await channel.send(voice.backfill_kept_text(kept))
+    log.info("backfill_kept channel=%s count=%s", channel.id, kept)
+
+
 # ---- sign-up lists (接龙) ----
 
 async def refresh_list_post(lst) -> None:
@@ -364,6 +424,9 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if bot.user is None or payload.user_id == bot.user.id:
         return
     emoji = str(payload.emoji)
+    if payload.message_id in _pending_backfill:
+        await handle_backfill_reaction(payload, emoji)
+        return
     if payload.guild_id is None:
         await handle_dm_reaction(payload, emoji)
         return
@@ -577,6 +640,7 @@ async def receipts_on(interaction: discord.Interaction):
     store.set_channel(interaction.channel_id, True)
     await interaction.response.send_message(voice.on_text())
     log.info("channel_on channel=%s", interaction.channel_id)
+    await propose_backfill(interaction.channel, interaction.user.id)
 
 
 @receipts_group.command(name="off", description="stop catching promises here")

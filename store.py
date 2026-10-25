@@ -92,6 +92,8 @@ class Store:
         self._awards_week: str | None = None
         self._cubbie: dict[int, str] = {}
         self._lists: dict[str, SignupList] = {}
+        self._opted_out: set[int] = set()
+        self._backfill_marks: dict[int, int] = {}
         self._load()
 
     def _load(self) -> None:
@@ -109,6 +111,8 @@ class Store:
         for raw in data.get("lists", []):
             lst = SignupList.from_dict(raw)
             self._lists[lst.id] = lst
+        self._opted_out = set(data.get("opted_out", []))
+        self._backfill_marks = {int(k): v for k, v in data.get("backfill_marks", {}).items()}
 
     def save(self) -> None:
         data = {
@@ -119,6 +123,8 @@ class Store:
             "last_awards_week": self._awards_week,
             "cubbie_topics": {str(k): v for k, v in self._cubbie.items()},
             "lists": [lst.to_dict() for lst in self._lists.values()],
+            "opted_out": sorted(self._opted_out),
+            "backfill_marks": {str(k): v for k, v in self._backfill_marks.items()},
         }
         tmp = self.path.with_name(self.path.name + ".tmp")
         with open(tmp, "w") as f:
@@ -323,8 +329,26 @@ class Store:
         self._lists = {lid: l for lid, l in self._lists.items() if l.author_id != user_id}
         for lst in self._lists.values():
             lst.entries = [e for e in lst.entries if e["user_id"] != user_id]
+        # someone who asked to be forgotten is left out of any later backfill scan.
+        self._opted_out.add(user_id)
         self.save()
         return len(gone)
+
+    def opt_out(self, user_id: int) -> None:
+        self._opted_out.add(user_id)
+        self.save()
+
+    def is_opted_out(self, user_id: int) -> bool:
+        return user_id in self._opted_out
+
+    # backfill. one message id per channel: the newest one the last scan looked at.
+
+    def backfill_mark(self, channel_id: int) -> int:
+        return self._backfill_marks.get(channel_id, 0)
+
+    def set_backfill_mark(self, channel_id: int, message_id: int) -> None:
+        self._backfill_marks[channel_id] = message_id
+        self.save()
 
     # channels and message links
 

@@ -12,18 +12,20 @@ Built for the Cubbie Hackathon, Track 3: an AI that joins a group chat and makes
 
 | | What it does | Where you see it in the demo |
 |---|---|---|
-| Surprising | Nobody types a command. You just talk, and a 🧾 reaction shows up on your message. | Step 2, the 🧾 pops on three normal chat messages. |
-| Useful | `/receipts board`, private nudges before things are due, the 🆘 → 🙋 handoff, and "who said they'd ...?" answers with a link to the original message. | Steps 2 to 5. |
-| Playful | `/awards` every Friday at 5pm. Most reliable, biggest comeback, most promises, the closer. Never mean, no shaming, no overdue list. | Step 6. |
+| Surprising | Nobody types a command. You just talk, and a 🧾 reaction shows up on your message. "who's in for the potluck?" turns into a 接龙 sign-up list on its own. | Steps 2 and 3. |
+| Useful | `/receipts board`, private nudges before things are due, the 🆘 → 🙋 handoff, "who said they'd ...?" answers with a link to the original message, and a ding to Cubbie when you go quiet right before something is due. | Steps 1 to 6. |
+| Playful | `/awards` every Friday at 5pm. Most reliable, biggest comeback, most promises, the closer. Never mean, no shaming, no overdue list. | Step 7. |
 
 ## How it works
 
-- `/receipts on` in a channel turns tracking on. Nothing is read anywhere else.
+- `/receipts on` in a channel turns tracking on. Nothing is read anywhere else. It also looks back through the last 200 messages for promises from this week and asks once, "found N promises from this week. keep them?" with ✅ and ❌. Nothing is stored until ✅. Bots and anyone who ran `/forgetme` are skipped, and no message is proposed twice.
 - Each message goes through a cheap keyword prefilter first ("I'll", "I can", "on it", ...). Most messages stop there and cost nothing.
 - Candidate messages go to `claude-haiku-5-5` with a strict JSON prompt, at most 80 output tokens and 500 characters of input. If the model is off (`USE_LLM=false`), errors, or returns anything that is not the expected JSON, a rule based extractor takes over. The bot works fully without the model.
 - The bot reacts 🧾 to the message. React ❌ or reply "not a promise" to undo. React ✅ or run `/done <what>` when it is finished.
 - About 24 hours before something is due you get a DM: "intro slides due tomorrow. still on it?" with ✅ and 🆘. Tap 🆘 and the bot asks the channel for a hand. The first 🙋 takes it over and both people get a confirmation.
 - Ask "who said they'd book the room?" in the channel and you get the name and a link to the message.
+- "who's in for the potluck friday? need 4 people" starts a 接龙 (jiēlóng), WeChat's group sign-up list. The bot posts one list message and edits it in place: title, numbered entries, empty slots if a number was given, and a 🙋 to join. "me", "+1", "I'm in", "I'll bring chips", "I can drive" as a reply to the starter or within 30 minutes add you. Entries with an item or a time become normal receipts, 🧾 on your reply, linked to the list. `/receipts list close` locks it. Starters are matched by rules first; Haiku only sees the ones the rules missed. Also catches "what's everyone bringing", "need 3 drivers" and "sign up for ...".
+- `/receipts ding on` is a stronger reminder, off by default and only for linked users. If something is due within 2 hours and you have not tapped ✅ on a nudge, you get one last-call DM. If 30 minutes pass with no answer, Cubbie hears "ding id=<id> what=<summary> due=<time>" on your topic, texts you, and if you opted into calls, phones you with a 30-minute block to offer. The channel only sees "🔔 reminded", never why. `/receipts ding off` turns it back off.
 - `/receipts link` connects Cubbie. The bot DMs you a private token, and from then on each of your receipts is relayed to Cubbie through ntfy.sh. Cubbie can send an sos back, and the bot runs the same 🆘 flow in the channel. `/receipts unlink` stops it. See "The Cubbie link" below.
 
 ## What we store and what we don't
@@ -42,6 +44,10 @@ Built for the Cubbie Hackathon, Track 3: an AI that joins a group chat and makes
 | The ids of channels where `/receipts on` was run | |
 | The demo clock offset from `!tick`, in seconds | |
 | Your private Cubbie topic, if you ran `/receipts link`. It works like a password and is never logged | Anything Cubbie says on the topic other than a valid sos |
+| Sign-up lists: the title, the slot count, who joined (user ids) and the few words they said they'd bring | The starter message or the replies |
+| Whether you turned ding on, and for each receipt whether the last call went out, whether you answered, and whether Cubbie was told | The channel never gets the summary, only "🔔 reminded" |
+| Your user id in a skip list after `/forgetme`, so a later backfill never re-reads your old messages | |
+| One message id per channel: the newest one the last backfill looked at, so nothing is proposed twice | The messages themselves. A backfill proposal lives in memory until ✅ or ❌ |
 
 State lives in one JSON file (`state.json`) written atomically. `/forgetme` deletes everything the bot has on you. `/receipts off` stops tracking a channel. Nudges go by DM. Overdue items are never posted in the channel. When you run `/receipts board` you see only your own overdue items, in a reply only you can see.
 
@@ -79,21 +85,26 @@ Tests:
 USE_LLM=false pytest
 ```
 
-## 60-second demo script
+## 90-second demo script
 
-1. `/receipts on`, then teammates chat naturally: "ok I'll do the intro slides by thursday", "I can book a hayden room", "I got snacks".
-2. 🧾 pops on each one. `/receipts board`.
-3. `!tick 24`. Yash gets a DM, "intro slides due tomorrow. still on it?", and taps 🆘.
-4. The channel asks for help. Suraj taps 🙋 and it's reassigned, with both confirmed.
-5. "who said they'd book the room?" gets a link to the message.
-6. `/awards`.
+1. Backfill. The group has been chatting for a week. `/receipts on`. The bot says "found 3 promises from this week. keep them?" Tap ✅. 🧾 pops on the three old messages and `/receipts board` shows them.
+2. Live. Teammates chat naturally: "ok I'll do the intro slides by tomorrow", "I can book a hayden room for sunday". 🧾 pops on each.
+3. 接龙. Bhavana: "who's in for the potluck friday? need 4 people". The bot posts a list with four open slots and a 🙋. Yash: "me". Suraj: "I'll bring chips". Someone taps 🙋. The list fills in as they go, and Suraj's chips get a 🧾 of their own. `/receipts list close` locks it.
+4. `!tick 24`. Yash gets a DM, "intro slides due tomorrow. still on it?", and taps 🆘.
+5. The channel asks for help. Suraj taps 🙋 and it's reassigned, with both confirmed.
+6. Ding. Yash has `/receipts link` and `/receipts ding on`. `!tick 10` walks the clock up to the deadline: Yash gets "last call: intro slides due today at 11:59pm. still on it?", says nothing, and 30 minutes later the channel sees "🔔 reminded" and Yash's phone rings. Cubbie: "receipts says intro slides is due tonight and hasn't heard back. still on it? want me to block 8 to 8:30 for it?"
+7. `/awards`.
+
+`!demo` seeds steps 2 and 3. For step 1, run `/receipts on` in a channel that already has a week of chat.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `/receipts on` / `/receipts off` | start or stop tracking this channel |
-| `/receipts board` | who promised what, grouped by person |
+| `/receipts board` | who promised what, grouped by person, plus the open sign-up lists |
+| `/receipts list close [what]` | lock the newest open 接龙 list, or the one whose title has those words |
+| `/receipts ding on` / `/receipts ding off` | let cubbie hear when you go quiet right before something is due. off by default, linked users only |
 | `/done <what>` | mark one of your promises done |
 | `/awards` | this week's awards |
 | `/forgetme` | delete everything the bot has on you |
@@ -101,16 +112,18 @@ USE_LLM=false pytest
 | `/receipts unlink` | disconnect Cubbie |
 | `/help` | short help |
 | `!demo` | seed a fake CSE 511 group chat (owner, demo role, or `DEMO_USER_IDS`) |
-| `!tick <hours>` | move the demo clock forward (owner, demo role, or `DEMO_USER_IDS`) |
+| `!tick <hours>` | move the demo clock forward in half-hour steps, running the scheduler after each (owner, demo role, or `DEMO_USER_IDS`) |
 
 ## Layout
 
 ```
 bot.py      discord events, commands, scheduler
 detect.py   keyword prefilter, model extraction, rule fallback
+lists.py    接龙 sign-up lists: starters by rule then haiku, join phrases
+backfill.py which old messages are worth proposing on /receipts on
 dates.py    "by thursday", "tomorrow", "fri 5pm" -> datetime
-store.py    receipts, channel opt in, forgetme, atomic save
-nudges.py   what is due soon, demo clock
+store.py    receipts, sign-up lists, channel opt in, forgetme, atomic save
+nudges.py   what is due soon, the ding timing, demo clock
 awards.py   weekly awards from the store
 voice.py    every line the bot says
 cubbie.py   the lines we send to cubbie, the sos lines we accept, what counts as fresh
@@ -133,9 +146,10 @@ receipt id=ab12cd34 what=intro slides due=2026-10-29T17:00:00-07:00 channel=cse5
 receipt id=ab12cd34 event=done
 receipt id=ab12cd34 event=reassigned
 receipt id=ab12cd34 event=removed
+ding id=ab12cd34 what=intro slides due=2026-10-29T17:00:00-07:00
 ```
 
-The first line goes out when a promise is caught. `due` is ISO 8601 with offset, or `none`. When someone takes a task over with 🙋, the old owner's topic gets `event=reassigned` and the new owner's topic gets a fresh `receipt` line, if they are linked.
+The first line goes out when a promise is caught. The `ding` line only goes out if you ran `/receipts ding on`, something is due within 2 hours, and you did not answer the last-call DM within 30 minutes. It carries a summary and a time, never a reason. `due` is ISO 8601 with offset, or `none`. When someone takes a task over with 🙋, the old owner's topic gets `event=reassigned` and the new owner's topic gets a fresh `receipt` line, if they are linked.
 
 What the bot reads back. It polls every linked topic every 5 seconds with `since=<last id>` and accepts exactly one shape:
 
@@ -147,10 +161,11 @@ It has to be your own open receipt, the line has to be under 10 minutes old, and
 
 If ntfy is down, receipts keep working. A failed post or poll is logged by error type only and the bot moves on.
 
-The Cubbie side lives in this repo too, as a Cubbie Skill in `receipts-link/`. A student installs it by texting Cubbie the folder's GitHub link, saves the token from `/receipts link`, and then Cubbie can answer "what did I promise", offer a calendar block before something is due, and send the sos when the student says "I can't do the slides". Its scripts use only the Python standard library. See `receipts-link/SKILL.md`.
+The Cubbie side lives in this repo too, as a Cubbie Skill in `receipts-link/`. A student installs it by texting Cubbie the folder's GitHub link, saves the token from `/receipts link`, and then Cubbie can answer "what did I promise", offer a calendar block before something is due, send the sos when the student says "I can't do the slides", and, when a ding arrives, text the student and place a phone check-in with a 30-minute block to offer. Its scripts use only the Python standard library. See `receipts-link/SKILL.md`.
 
 ## What's next
 
 - Let Cubbie mark a receipt done from the calendar event, so finishing the block closes the receipt.
+- Let people leave a 接龙 list by removing their 🙋.
 - Smarter "on it" handling: when someone replies "on it" to a request, use the request as the summary.
 - Per-channel awards time instead of one global Friday 5pm.

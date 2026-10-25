@@ -712,3 +712,29 @@ def test_sos_when_channel_is_off_does_nothing(bot_module, polling, caplog):
         asyncio.run(bot_module.poll_cubbie_once())
     assert posted == []
     assert f"help_channel_off receipt={r.id}" in caplog.text
+
+
+def test_unlinked_topics_drop_their_cursor(bot_module, polling):
+    fake, posted = polling
+    fake.inbox["receipts-topic-of-user-1"] = [sos("deadbeef", message_id="m7")]
+    asyncio.run(bot_module.poll_cubbie_once())
+    assert "receipts-topic-of-user-1" in bot_module._cubbie_cursors
+    bot_module.store.unlink_cubbie(1)
+    asyncio.run(bot_module.poll_cubbie_once())
+    assert bot_module._cubbie_cursors == {}
+
+
+def test_topics_are_polled_together(bot_module, polling, monkeypatch):
+    fake, posted = polling
+    bot_module.store.link_cubbie(2, "receipts-topic-of-user-2")
+    running, peak = [0], [0]
+
+    async def slow_poll(topic, since):
+        running[0] += 1
+        peak[0] = max(peak[0], running[0])
+        await asyncio.sleep(0.01)
+        running[0] -= 1
+        return []
+    monkeypatch.setattr(fake, "poll", slow_poll)
+    asyncio.run(bot_module.poll_cubbie_once())
+    assert peak[0] == 2

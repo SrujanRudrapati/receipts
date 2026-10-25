@@ -170,20 +170,26 @@ async def handle_sos(user_id: int, receipt_id: str) -> None:
     await request_help(receipt)
 
 
-async def poll_cubbie_once() -> None:
-    """read every linked topic once. one bad topic must not stop the others."""
-    for user_id, topic in store.cubbie_links().items():
-        cursor = _cubbie_cursors.setdefault(topic, cubbie.Cursor())
+async def poll_one_topic(user_id: int, topic: str) -> None:
+    cursor = _cubbie_cursors.setdefault(topic, cubbie.Cursor())
+    try:
+        messages = await relay_client.poll(topic, cursor.since)
+    except Exception as error:
+        log.info("cubbie_poll_failed user=%s error=%s", user_id, type(error).__name__)
+        return
+    for receipt_id in cubbie.sos_ids(messages, time.time(), cursor):
         try:
-            messages = await relay_client.poll(topic, cursor.since)
+            await handle_sos(user_id, receipt_id)
         except Exception as error:
-            log.info("cubbie_poll_failed user=%s error=%s", user_id, type(error).__name__)
-            continue
-        for receipt_id in cubbie.sos_ids(messages, time.time(), cursor):
-            try:
-                await handle_sos(user_id, receipt_id)
-            except Exception as error:
-                log.info("cubbie_sos_failed receipt=%s error=%s", receipt_id, type(error).__name__)
+            log.info("cubbie_sos_failed receipt=%s error=%s", receipt_id, type(error).__name__)
+
+
+async def poll_cubbie_once() -> None:
+    """read every linked topic once, all at the same time. one bad topic must not stop the others."""
+    links = store.cubbie_links()
+    for stale in set(_cubbie_cursors) - set(links.values()):
+        del _cubbie_cursors[stale]
+    await asyncio.gather(*(poll_one_topic(user_id, topic) for user_id, topic in links.items()))
 
 
 @tasks.loop(seconds=CUBBIE_POLL_SECONDS)

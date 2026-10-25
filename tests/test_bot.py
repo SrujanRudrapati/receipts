@@ -393,14 +393,73 @@ def test_link_dms_the_token_and_stores_it(bot_module, monkeypatch, caplog):
     assert topic not in caplog.text
 
 
-def test_link_again_makes_a_new_token(bot_module, monkeypatch):
+def test_link_again_resends_the_same_token(bot_module, monkeypatch, caplog):
+    """linking twice is not a rotation. the token the student already saved in cubbie keeps working."""
     sent = []
     monkeypatch.setattr(bot_module, "dm", fake_dm(sent))
     asyncio.run(bot_module.receipts_link.callback(FakeInteraction(1, 10)))
-    asyncio.run(bot_module.receipts_link.callback(FakeInteraction(1, 10)))
+    again = FakeInteraction(1, 10)
+    with caplog.at_level(logging.INFO):
+        asyncio.run(bot_module.receipts_link.callback(again))
     first, second = (text.splitlines()[-1] for _, text in sent)
-    assert first != second
+    assert first == second
+    assert sent[1][1] == bot_module.voice.link_dm_again(first)
+    assert bot_module.store.cubbie_topic(1) == first
+    assert again.calls == [("defer", None, {"ephemeral": True}),
+                           ("followup", bot_module.voice.link_again_reply(), {"ephemeral": True})]
+    assert "cubbie_link_resent user=1" in caplog.text
+    assert first not in caplog.text
+
+
+def test_link_new_rotates_the_token(bot_module, monkeypatch, caplog):
+    sent = []
+    monkeypatch.setattr(bot_module, "dm", fake_dm(sent))
+    asyncio.run(bot_module.receipts_link.callback(FakeInteraction(1, 10)))
+    rotate = FakeInteraction(1, 10)
+    with caplog.at_level(logging.INFO):
+        asyncio.run(bot_module.receipts_link.callback(rotate, "new"))
+    first, second = (text.splitlines()[-1] for _, text in sent)
+    assert first != second and second.startswith("receipts-")
     assert bot_module.store.cubbie_topic(1) == second
+    assert sent[1][1] == bot_module.voice.link_dm_new(second)
+    assert "update" in sent[1][1].lower() and "RECEIPTS_LINK_TOKEN" in sent[1][1]
+    assert rotate.calls == [("defer", None, {"ephemeral": True}),
+                            ("followup", bot_module.voice.link_new_reply(), {"ephemeral": True})]
+    assert "cubbie_link_rotated user=1" in caplog.text
+    assert second not in caplog.text
+
+
+def test_link_new_when_not_linked_just_links(bot_module, monkeypatch, caplog):
+    sent = []
+    monkeypatch.setattr(bot_module, "dm", fake_dm(sent))
+    interaction = FakeInteraction(1, 10)
+    with caplog.at_level(logging.INFO):
+        asyncio.run(bot_module.receipts_link.callback(interaction, "new"))
+    topic = sent[0][1].splitlines()[-1]
+    assert bot_module.store.cubbie_topic(1) == topic
+    assert sent[0][1] == bot_module.voice.link_dm(topic)
+    assert interaction.calls[1] == ("followup", bot_module.voice.link_reply(), {"ephemeral": True})
+    assert "cubbie_linked user=1" in caplog.text
+
+
+def test_link_keeps_the_old_token_when_the_dm_fails(bot_module, monkeypatch):
+    """a resend or a rotation that cannot reach the student changes nothing."""
+    bot_module.store.link_cubbie(1, "receipts-abcdefghijklmnop")
+
+    async def dm(user_id, text, reactions=()):
+        return None
+    monkeypatch.setattr(bot_module, "dm", dm)
+    for mode in (None, "new"):
+        interaction = FakeInteraction(1, 10)
+        asyncio.run(bot_module.receipts_link.callback(interaction, mode))
+        assert bot_module.store.cubbie_topic(1) == "receipts-abcdefghijklmnop"
+        assert interaction.calls[1] == ("followup", bot_module.voice.link_dm_failed(), {"ephemeral": True})
+
+
+def test_link_offers_new_as_its_only_choice(bot_module):
+    (param,) = bot_module.receipts_link.parameters
+    assert param.name == "mode" and param.required is False
+    assert [c.value for c in param.choices] == ["new"]
 
 
 def test_link_stores_nothing_when_dm_fails(bot_module, monkeypatch, caplog):

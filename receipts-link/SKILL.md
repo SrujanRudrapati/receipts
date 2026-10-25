@@ -40,7 +40,7 @@ None. The two scripts use only the Python standard library.
 
 This Skill needs the student's Receipts link token, saved in Cubbie as `RECEIPTS_LINK_TOKEN`. It is the name of the student's private topic and works like a password.
 
-How the student gets one: in Discord, in a server where Receipts is running, they run `/receipts link`. The bot DMs them the token with a line that says to save it in Cubbie as `RECEIPTS_LINK_TOKEN`. Running `/receipts link` again makes a new token and the old one stops working.
+How the student gets one: in Discord, in a server where Receipts is running, they run `/receipts link`. The bot DMs them the token with a line that says to save it in Cubbie as `RECEIPTS_LINK_TOKEN`. Running `/receipts link` again sends the same token again by DM, so a second link never breaks a saved one. To rotate it the student runs `/receipts link` and picks `new`; the old token stops working and the new one has to be saved in Cubbie.
 
 If the token is not saved yet, send the student the secure page to save it. Never ask for it in the chat, never say it back, and never put it in a reminder or a calendar event. Commands get the token only when they name it, as the run commands below do.
 
@@ -213,7 +213,7 @@ python3 scripts/sos.py --id ab12cd34 --sample
 | 2 | Bad or unknown receipt id, or the group was already asked | Run pull.py again and use an id from its output. If it is still missing, "that one isn't open anymore." If it says already asked, tell the student that and offer to ask again only if they want. |
 | 3 | `RECEIPTS_LINK_TOKEN` not saved | "I need your Receipts link token first. run /receipts link in Discord, the bot DMs it to you." Then send the secure page to save it. |
 | 4 | ntfy.sh unreachable | "can't reach the receipts relay right now, I'll try again in a bit." Try once more later, not in a loop. |
-| 5 | ntfy rejected the topic | "your receipts token doesn't seem to work. run /receipts link in Discord again and save the new one." |
+| 5 | ntfy rejected the topic | "your receipts token doesn't seem to work. run /receipts link in Discord, it resends the token by DM. save that one. if it still fails, run /receipts link and pick new." |
 | 6 | Other ntfy error | "the receipts relay is having a moment. try again in a few minutes." |
 
 Other cases:
@@ -226,4 +226,4 @@ Other cases:
 
 Under the student's HOME, in `~/.config/receipts-link/state.json`: receipt ids, the short promise text, due date, channel name, whether it is open, whether a block was offered, when help was asked, and when a ding came in and whether the student was told. No token, no messages from the chat, nothing about other people. Closed receipts are dropped after a week, and the file holds at most 200.
 
-One thing to know: the topic is the only secret. Anyone who learns it can read the student's receipts and write fake lines. That is why the token never goes in the chat, a calendar event or a reminder, and why the student should run `/receipts link` again in Discord if they think it got out.
+One thing to know: the topic is the only secret. Anyone who learns it can read the student's receipts and write fake lines. That is why the token never goes in the chat, a calendar event or a reminder, and why the student should run `/receipts link` with `new` in Discord if they think it got out.

@@ -218,7 +218,7 @@ def help_text():
         "`/awards` for the playful weekly awards.",
         "`/forgetme` wipes everything i have on you.",
         "`/receipts off` turns me off in a channel.",
-        "`/receipts link` connects cubbie, so it hears about your receipts. `/receipts unlink` stops that.",
+        "`/receipts link` connects cubbie, so it hears about your receipts. run it again to get your token resent, or pick `new` for a fresh one. `/receipts unlink` stops that.",
         "`/receipts ding on` lets cubbie hear when you go quiet right before something is due. off by default.",
     ])
 
@@ -299,6 +299,28 @@ def link_dm(topic):
 
 def link_reply():
     return "sent you a dm with your cubbie token."
+
+
+def link_dm_again(topic):
+    return "\n".join([
+        "here's your cubbie token again. it's the same one, saved in Cubbie as RECEIPTS_LINK_TOKEN. it works like a password.",
+        topic,
+    ])
+
+
+def link_again_reply():
+    return "you're already linked, so i sent the same token again by dm. want a fresh one? run `/receipts link` and pick `new`."
+
+
+def link_dm_new(topic):
+    return "\n".join([
+        "new cubbie token. update RECEIPTS_LINK_TOKEN in Cubbie with this one. the old one stopped working.",
+        topic,
+    ])
+
+
+def link_new_reply():
+    return "sent you a dm with a new cubbie token. the old one stopped working, so update it in cubbie."
 
 
 def link_dm_failed():

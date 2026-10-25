@@ -743,19 +743,32 @@ async def receipts_off(interaction: discord.Interaction):
 
 
 @receipts_group.command(name="link", description="connect cubbie to your receipts")
+@app_commands.describe(mode="new: a fresh token. the old one stops working, so update it in cubbie")
 @timed
-async def receipts_link(interaction: discord.Interaction):
+async def receipts_link(interaction: discord.Interaction, mode: Literal["new"] | None = None):
     await interaction.response.defer(ephemeral=True)
     # the topic works like a password. it goes out by dm, and is only saved once the dm worked.
-    topic = cubbie.new_topic()
-    sent = await dm(interaction.user.id, voice.link_dm(topic))
-    if sent is None:
-        await interaction.followup.send(voice.link_dm_failed(), ephemeral=True)
-        log.info("cubbie_link_dm_failed user=%s", interaction.user.id)
+    # linking again resends the one already saved in cubbie. only "new" makes another.
+    user_id = interaction.user.id
+    current = store.cubbie_topic(user_id)
+    if current is not None and mode is None:
+        if await dm(user_id, voice.link_dm_again(current)) is None:
+            await interaction.followup.send(voice.link_dm_failed(), ephemeral=True)
+            log.info("cubbie_link_dm_failed user=%s", user_id)
+            return
+        await interaction.followup.send(voice.link_again_reply(), ephemeral=True)
+        log.info("cubbie_link_resent user=%s", user_id)
         return
-    await persist(store.link_cubbie, interaction.user.id, topic)
-    await interaction.followup.send(voice.link_reply(), ephemeral=True)
-    log.info("cubbie_linked user=%s", interaction.user.id)
+    rotating = current is not None
+    topic = cubbie.new_topic()
+    text = voice.link_dm_new(topic) if rotating else voice.link_dm(topic)
+    if await dm(user_id, text) is None:
+        await interaction.followup.send(voice.link_dm_failed(), ephemeral=True)
+        log.info("cubbie_link_dm_failed user=%s", user_id)
+        return
+    await persist(store.link_cubbie, user_id, topic)
+    await interaction.followup.send(voice.link_new_reply() if rotating else voice.link_reply(), ephemeral=True)
+    log.info("cubbie_link_rotated user=%s" if rotating else "cubbie_linked user=%s", user_id)
 
 
 @receipts_group.command(name="unlink", description="disconnect cubbie from your receipts")

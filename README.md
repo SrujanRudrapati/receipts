@@ -25,8 +25,8 @@ Built for the Cubbie Hackathon, Track 3: an AI that joins a group chat and makes
 - About 24 hours before something is due you get a DM: "intro slides due tomorrow. still on it?" with ✅ and 🆘. Tap 🆘 and the bot asks the channel for a hand. The first 🙋 takes it over and both people get a confirmation.
 - Ask "who said they'd book the room?" in the channel and you get the name and a link to the message.
 - "who's in for the potluck friday? need 4 people" starts a 接龙 (jiēlóng), WeChat's group sign-up list. The bot posts one list message and edits it in place: title, numbered entries, empty slots if a number was given, and a 🙋 to join. "me", "+1", "I'm in", "I'll bring chips", "I can drive" as a reply to the starter or within 30 minutes add you. Entries with an item or a time become normal receipts, 🧾 on your reply, linked to the list. `/receipts list close` locks it. Starters are matched by rules first; Haiku only sees the ones the rules missed. Also catches "what's everyone bringing", "need 3 drivers" and "sign up for ...".
-- `/receipts ding on` is a stronger reminder, off by default and only for linked users. If something is due within 2 hours and you have not tapped ✅ on a nudge, you get one last-call DM. If 30 minutes pass with no answer, Cubbie hears "ding id=<id> what=<summary> due=<time>" on your topic, texts you, and if you opted into calls, phones you with a 30-minute block to offer. The channel only sees "🔔 reminded", never why. `/receipts ding off` turns it back off.
-- `/receipts link` connects Cubbie. The bot DMs you a private token, and from then on each of your receipts is relayed to Cubbie through ntfy.sh. Cubbie can send an sos back, and the bot runs the same 🆘 flow in the channel. `/receipts unlink` stops it. See "The Cubbie link" below.
+- `/receipts ding on` is a stronger reminder, off by default and only for linked users. The flow is nudge, last call, Cubbie text, then an optional call. About 24 hours out you get the usual nudge. If something is due within 2 hours and you have not tapped ✅, you get one last-call DM. If 30 minutes pass with no answer, Cubbie hears "ding id=<id> what=<summary> due=<time>" on your topic and texts you once: the promise, when it's due, one free 30-minute slot from your calendar to block, and "or say 'help' and I'll ask the group for a hand." Only if you opted into calls does Cubbie also phone you. The channel only sees "🔔 reminded", never what or why. `/receipts ding off` turns it back off.
+- `/receipts link` connects Cubbie. The bot DMs you a private token, and from then on each of your receipts is relayed to Cubbie through ntfy.sh. Cubbie can send an sos back, and the bot runs the same 🆘 flow in the channel. Running `/receipts link` again resends the same token, so linking twice never breaks the one you saved. Pick `new` to rotate it. `/receipts unlink` stops it. See "The Cubbie link" below.
 
 ## What we store and what we don't
 
@@ -92,7 +92,7 @@ USE_LLM=false pytest
 3. 接龙. Bhavana: "who's in for the potluck friday? need 4 people". The bot posts a list with four open slots and a 🙋. Yash: "me". Suraj: "I'll bring chips". Someone taps 🙋. The list fills in as they go, and Suraj's chips get a 🧾 of their own. `/receipts list close` locks it.
 4. `!tick 24`. Yash gets a DM, "intro slides due tomorrow. still on it?", and taps 🆘.
 5. The channel asks for help. Suraj taps 🙋 and it's reassigned, with both confirmed.
-6. Ding. Yash has `/receipts link` and `/receipts ding on`. `!tick 10` walks the clock up to the deadline: Yash gets "last call: intro slides due today at 11:59pm. still on it?", says nothing, and 30 minutes later the channel sees "🔔 reminded" and Yash's phone rings. Cubbie: "receipts says intro slides is due tonight and hasn't heard back. still on it? want me to block 8 to 8:30 for it?"
+6. Ding. Yash has `/receipts link` and `/receipts ding on`. `!tick 10` walks the clock up to the deadline: Yash gets "last call: intro slides due today at 11:59pm. still on it?", says nothing, and 30 minutes later the channel sees "🔔 reminded" while Yash's phone buzzes. Cubbie: "receipts says intro slides is due today at 11:59pm and hasn't heard back. still on it? want me to block 8-8:30pm for it? or say 'help' and I'll ask the group for a hand." If Yash opted into calls, the phone rings too.
 7. `/awards`.
 
 `!demo` seeds steps 2 and 3. For step 1, run `/receipts on` in a channel that already has a week of chat.
@@ -108,7 +108,7 @@ USE_LLM=false pytest
 | `/done <what>` | mark one of your promises done |
 | `/awards` | this week's awards |
 | `/forgetme` | delete everything the bot has on you |
-| `/receipts link` | connect Cubbie. you get a private token by DM |
+| `/receipts link` | connect Cubbie. you get a private token by DM. run it again and the same token is resent. pick `new` to rotate it |
 | `/receipts unlink` | disconnect Cubbie |
 | `/help` | short help |
 | `!demo` | seed a fake CSE 511 group chat (owner, demo role, or `DEMO_USER_IDS`) |
@@ -137,7 +137,7 @@ tests/      pytest, runs in CI with USE_LLM=false
 
 Receipts and Cubbie talk through [ntfy.sh](https://ntfy.sh), a plain pub/sub relay. There is no account and no shared server. Each linked user gets a random private topic, `receipts-` plus 16 url-safe characters. Whoever knows the topic can read and write it, so it works like a password. It only ever goes out in a DM, and the logs never contain it.
 
-`/receipts link` makes the topic, DMs it to you with "save this in Cubbie as RECEIPTS_LINK_TOKEN. it works like a password." and saves it. Running it again makes a new topic and the old one stops working. `/receipts unlink` and `/forgetme` both delete it.
+`/receipts link` makes the topic, DMs it to you with "save this in Cubbie as RECEIPTS_LINK_TOKEN. it works like a password." and saves it. Running it again does not change it: the bot DMs you the same token once more, so the one saved in Cubbie keeps working. `/receipts link` with `new` makes a fresh topic, the old one stops working, and the DM says to update it in Cubbie. `/receipts unlink` and `/forgetme` both delete it.
 
 What the bot posts to your topic, one line each:
 
@@ -161,7 +161,7 @@ It has to be your own open receipt, the line has to be under 10 minutes old, and
 
 If ntfy is down, receipts keep working. A failed post or poll is logged by error type only and the bot moves on.
 
-The Cubbie side lives in this repo too, as a Cubbie Skill in `receipts-link/`. A student installs it by texting Cubbie the folder's GitHub link, saves the token from `/receipts link`, and then Cubbie can answer "what did I promise", offer a calendar block before something is due, send the sos when the student says "I can't do the slides", and, when a ding arrives, text the student and place a phone check-in with a 30-minute block to offer. Its scripts use only the Python standard library. See `receipts-link/SKILL.md`.
+The Cubbie side lives in this repo too, as a Cubbie Skill in `receipts-link/`. A student installs it by texting Cubbie the folder's GitHub link, saves the token from `/receipts link`, and then Cubbie can answer "what did I promise" from a fresh pull every time, say when a teammate picked one up ("it's off your plate"), offer a calendar block before something is due, send the sos when the student says "I can't do the slides" and check back 10 minutes later on who took it, and, when a ding arrives, text the student one message with a 30-minute slot to block and the word to say for help, then call only if they opted into calls. Its scripts use only the Python standard library. See `receipts-link/SKILL.md`.
 
 ## What's next
 

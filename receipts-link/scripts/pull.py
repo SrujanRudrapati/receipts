@@ -4,7 +4,9 @@
 Polls the student's private ntfy topic for the last 24 hours of receipt lines, folds them into the
 saved state under HOME, and prints the open ones. 'new' means Cubbie has not offered a time block for it
 yet; run with --offered <id> after offering so it is not brought up again. 'ding' means the bot sent its
-last call and heard nothing; run with --dinged <id> once the student has been told.
+last call and heard nothing; run with --dinged <id> once the student has been told. After the open ones, a
+'changed' block lists any receipt that was open at the last pull and has since been done, reassigned or
+removed, so Cubbie can tell the student it is off their plate. Each change is listed once.
 
   RECEIPTS_LINK_TOKEN="$RECEIPTS_LINK_TOKEN" python3 scripts/pull.py --now "<student's local date and time>"
   RECEIPTS_LINK_TOKEN="$RECEIPTS_LINK_TOKEN" python3 scripts/pull.py --offered ab12cd34
@@ -54,6 +56,23 @@ def render(state: dict, now: str | None) -> str:
     return "\n".join(lines)
 
 
+def closed_since(before: dict, after: dict) -> list[dict]:
+    """receipts that were open at the last pull and are not any more, oldest close first.
+    a receipt caught and closed inside one poll was never shown, so it is not a change."""
+    was_open = {rid for rid, r in before["receipts"].items() if r.get("status") == "open"}
+    closed = [{"id": rid, **r} for rid, r in after["receipts"].items()
+              if rid in was_open and r.get("status") != "open"]
+    return sorted(closed, key=lambda r: r.get("closed_at") or 0)
+
+
+def render_changes(closed: list[dict]) -> str:
+    if not closed:
+        return ""
+    lines = [f"changed {len(closed)}"]
+    lines.extend(f"{r['status']} {r['id']} | {r['what']}" for r in closed)
+    return "\n".join(lines)
+
+
 def mark(receipt_id: str, flag: str, label: str, option: str) -> int:
     state = link.load_state()
     if receipt_id not in state["receipts"]:
@@ -83,9 +102,13 @@ def main(argv: list[str] | None = None) -> int:
         print(render(link.apply_messages({"receipts": {}}, sample_messages()), args.now))
         return link.EXIT_OK
     topic = link.require_topic()
-    state = link.apply_messages(link.load_state(), link.poll(topic, SINCE))
+    before = link.load_state()
+    state = link.apply_messages(before, link.poll(topic, SINCE))
     link.save_state(state)
     print(render(state, args.now))
+    changes = render_changes(closed_since(before, state))
+    if changes:
+        print(changes)
     return link.EXIT_OK
 
 

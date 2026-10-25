@@ -576,3 +576,42 @@ def test_skill_md_always_pulls_fresh():
     for phrase in ("what did I promise", "check my receipts", "did anyone take it"):
         assert phrase in text
     assert "Never answer from memory" in text
+
+
+def test_pull_reports_receipts_that_closed_since_the_last_pull(pull, link, home, token, monkeypatch, capsys):
+    """the student was told about two receipts. one was taken over, one marked done. say so, once."""
+    fake_urlopen(link, monkeypatch, body=ndjson(caught("ab12cd34", "send the outline", at=NOW - 60),
+                                               caught("9f8e7d6c", "book a room", at=NOW - 50)))
+    code, out, _ = run(pull, [], capsys)
+    assert code == 0 and "changed" not in out
+    fake_urlopen(link, monkeypatch, body=ndjson(event("ab12cd34", "reassigned", at=NOW),
+                                               event("9f8e7d6c", "done", at=NOW + 1)))
+    code, out, _ = run(pull, [], capsys)
+    assert code == 0
+    assert out.splitlines() == [
+        "open 0",
+        "no open receipts.",
+        "changed 2",
+        "reassigned ab12cd34 | send the outline",
+        "done 9f8e7d6c | book a room",
+    ]
+    fake_urlopen(link, monkeypatch, body="")
+    code, out, _ = run(pull, [], capsys)
+    assert code == 0 and "changed" not in out
+
+
+def test_pull_lists_changes_after_the_open_receipts(pull, link, home, token, monkeypatch, capsys):
+    fake_urlopen(link, monkeypatch, body=ndjson(caught("ab12cd34", "send the outline", at=NOW - 60),
+                                               caught("9f8e7d6c", "book a room", at=NOW - 50)))
+    run(pull, [], capsys)
+    fake_urlopen(link, monkeypatch, body=ndjson(event("ab12cd34", "removed", at=NOW)))
+    code, out, _ = run(pull, [], capsys)
+    lines = out.splitlines()
+    assert lines[0] == "open 1" and lines[1].startswith("new 9f8e7d6c")
+    assert lines[2:] == ["changed 1", "removed ab12cd34 | send the outline"]
+
+
+def test_skill_md_reports_changes_plainly():
+    head, text = frontmatter()
+    assert "`changed <count>`" in text
+    assert "off your plate" in text

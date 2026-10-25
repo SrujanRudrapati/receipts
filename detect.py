@@ -78,6 +78,11 @@ def _normalize(text: str) -> str:
     return text.replace("’", "'").replace("'", "")
 
 
+def hedged(text: str) -> bool:
+    """true when the message backs away from committing, like "maybe" or "i'll think about it"."""
+    return bool(_HEDGE_RE.search(_normalize(text)))
+
+
 def prefilter(text: str) -> bool:
     norm = _normalize(text)
     if not norm or norm.endswith("?"):
@@ -196,28 +201,36 @@ def _get_client():
     return _client
 
 
-def anthropic_call(cleaned: str) -> str:
+def anthropic_call(cleaned: str, system_prompt: str = SYSTEM_PROMPT) -> str:
     resp = _get_client().messages.create(
         model=MODEL,
         max_tokens=MAX_TOKENS,
-        system=SYSTEM_PROMPT,
+        system=system_prompt,
         messages=[{"role": "user", "content": cleaned}],
     )
     return resp.content[0].text
 
 
-def _ask_model(text: str, author_id: int, now: datetime,
-               llm_call: Callable[[str], str] | None) -> dict | None:
-    # returns the validated reply, or None if we should use the rules.
-    # a caller-supplied llm_call skips the limiter (it is for tests and tools).
+def ask_model(text: str, author_id: int, validator: Callable[[str], dict | None],
+              llm_call: Callable[[str], str] | None, system_prompt: str = SYSTEM_PROMPT) -> dict | None:
+    """one haiku call with a strict json reply, shared by the promise and list detectors.
+
+    returns the validated reply, or None if the caller should use its rules.
+    a caller-supplied llm_call skips the limiter (it is for tests and tools).
+    """
     if llm_call is None:
-        if not llm_enabled() or not RATE_LIMITER.allow(author_id, now):
+        if not llm_enabled() or not RATE_LIMITER.allow(author_id):
             return None
-        llm_call = anthropic_call
+        llm_call = lambda cleaned: anthropic_call(cleaned, system_prompt)  # noqa: E731
     try:
-        return validate_model_json(llm_call(clean_for_model(text)))
+        return validator(llm_call(clean_for_model(text)))
     except Exception:
         return None
+
+
+def _ask_model(text: str, author_id: int, now: datetime,
+               llm_call: Callable[[str], str] | None) -> dict | None:
+    return ask_model(text, author_id, validate_model_json, llm_call)
 
 
 def extract(text: str, author_id: int, now: datetime,

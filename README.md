@@ -116,6 +116,7 @@ voice.py    every line the bot says
 cubbie.py   the lines we send to cubbie, the sos lines we accept, what counts as fresh
 relay.py    ntfy over aiohttp, post and poll
 demo.py     the !demo seed
+receipts-link/  the Cubbie Skill: SKILL.md, scripts/pull.py, scripts/sos.py
 tests/      pytest, runs in CI with USE_LLM=false
 ```
 
@@ -146,8 +147,10 @@ It has to be your own open receipt, the line has to be under 10 minutes old, and
 
 If ntfy is down, receipts keep working. A failed post or poll is logged by error type only and the bot moves on.
 
+The Cubbie side lives in this repo too, as a Cubbie Skill in `receipts-link/`. A student installs it by texting Cubbie the folder's GitHub link, saves the token from `/receipts link`, and then Cubbie can answer "what did I promise", offer a calendar block before something is due, and send the sos when the student says "I can't do the slides". Its scripts use only the Python standard library. See `receipts-link/SKILL.md`.
+
 ## What's next
 
-- Cubbie can add receipts to your calendar, so a promise in chat becomes a calendar event with a reminder.
+- Let Cubbie mark a receipt done from the calendar event, so finishing the block closes the receipt.
 - Smarter "on it" handling: when someone replies "on it" to a request, use the request as the summary.
 - Per-channel awards time instead of one global Friday 5pm.

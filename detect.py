@@ -115,7 +115,8 @@ def _after_commit(base: str) -> str:
 
 
 def rule_extract(text: str, author_id: int, now: datetime) -> dict | None:
-    text = clean_for_model(text).replace("’", "'")
+    # drop every "@" too, same as the model path, so nothing mention-like is stored
+    text = clean_for_model(text).replace("’", "'").replace("@", "")
     base = _FILLER_RE.sub("", text).strip() or text
     # only the clause right after the commit phrase, so "I got snacks, also my
     # door code is 4417" stores "snacks" and nothing else.

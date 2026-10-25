@@ -270,14 +270,17 @@ async def send_nudges(current: datetime) -> None:
 async def post_awards(current: datetime) -> None:
     # save the week before sending, so one broken channel can't make us post again every 30s.
     store.last_awards_week = awards.week_key(current)
+    posted = 0
     for channel_id in store.tracked_channels():
         try:
             text = await awards_message(current, channel_id)
             channel = await get_channel(channel_id)
             await channel.send(text)
-        except discord.HTTPException:
-            log.info("awards_failed channel=%s", channel_id)
-    log.info("awards_posted")
+            posted += 1
+        except Exception as error:
+            # any error in one channel must not stop the others. log the type only.
+            log.info("awards_failed channel=%s error=%s", channel_id, type(error).__name__)
+    log.info("awards_posted channels=%s", posted)
 
 
 async def run_scheduler_once() -> None:

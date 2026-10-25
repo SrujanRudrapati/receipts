@@ -269,3 +269,9 @@ def test_client_built_once_with_timeout(monkeypatch):
     second = detect._get_client()
     assert first is second
     assert made == [{"timeout": 8.0, "max_retries": 0}]
+
+
+def test_rule_path_drops_bare_at(now):
+    promise = detect.extract("ok on it @someone", 1, now)
+    assert promise is not None
+    assert "@" not in promise["what"]

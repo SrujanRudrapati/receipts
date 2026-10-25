@@ -21,7 +21,7 @@ def _clock_re(tag: str) -> str:
             rf"\s*(?P<ap{tag}>am|pm)?\b")
 
 
-_LEAD = r"(?:(?:by|before|on|until|til)\s+)?"
+_LEAD = r"(?:(?:by|before|on|for|until|til)\s+)?"
 
 # a day, optionally followed by a time. or a time on its own.
 _PHRASE = re.compile(

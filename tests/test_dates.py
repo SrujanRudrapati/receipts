@@ -53,3 +53,12 @@ def test_strip_due():
 
 def test_result_is_tz_aware(now):
     assert parse_due("tomorrow", now).tzinfo is now.tzinfo
+
+
+def test_strip_due_removes_for_weekday():
+    assert strip_due("book a hayden room for sunday") == "book a hayden room"
+
+
+def test_for_weekday_parses(now):
+    due = parse_due("book a hayden room for sunday", now)
+    assert due is not None and due.weekday() == 6

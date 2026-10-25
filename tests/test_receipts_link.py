@@ -567,3 +567,12 @@ def test_skill_md_covers_the_ding():
     assert "--dinged <id>" in text
     assert "only after the student says yes" in text or "Ask before" in text
     assert "phone" in text.lower()
+
+
+def test_skill_md_always_pulls_fresh():
+    """every receipts question runs pull.py first. no answer comes from memory or an earlier check."""
+    head, text = frontmatter()
+    assert "## Always pull fresh" in text
+    for phrase in ("what did I promise", "check my receipts", "did anyone take it"):
+        assert phrase in text
+    assert "Never answer from memory" in text

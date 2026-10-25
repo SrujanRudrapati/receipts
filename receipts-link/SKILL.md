@@ -20,12 +20,17 @@ Receipts and Cubbie talk through ntfy.sh, a plain pub/sub relay. Each student ha
 ## When to use
 
 - "what did I promise"
-- "my receipts" or "show my receipts"
+- "my receipts", "show my receipts" or "check my receipts"
+- "did anyone take it" or "did someone pick up the slides"
 - "I can't do <task>" or "I can't do the slides anymore"
 - "I need help with <task>"
 - "did I say I'd do anything this week"
 
 Do not use it for Canvas assignments that nobody promised in a chat, or for marking a promise done. Done happens in Discord, with a checkmark reaction or /done.
+
+## Always pull fresh
+
+Receipts change while Cubbie is not looking: a teammate takes one over, the student marks one done in Discord, a ding comes in. So every question about receipts starts with a fresh run of `scripts/pull.py`, the way flow 1 step 1 shows it. "what did I promise", "my receipts", "check my receipts", "did anyone take it" and anything like them all run the script first, then answer from its output. Never answer from memory or from an earlier check, even one from a minute ago, and even when the student only wants to know about one receipt. The same goes for a scheduled check-in: it runs the script, then reports.
 
 ## Setup
 

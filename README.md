@@ -24,6 +24,7 @@ Built for the Cubbie Hackathon, Track 3: an AI that joins a group chat and makes
 - The bot reacts 🧾 to the message. React ❌ or reply "not a promise" to undo. React ✅ or run `/done <what>` when it is finished.
 - About 24 hours before something is due you get a DM: "intro slides due tomorrow. still on it?" with ✅ and 🆘. Tap 🆘 and the bot asks the channel for a hand. The first 🙋 takes it over and both people get a confirmation.
 - Ask "who said they'd book the room?" in the channel and you get the name and a link to the message.
+- `/receipts link` connects Cubbie. The bot DMs you a private token, and from then on each of your receipts is relayed to Cubbie through ntfy.sh. Cubbie can send an sos back, and the bot runs the same 🆘 flow in the channel. `/receipts unlink` stops it. See "The Cubbie link" below.
 
 ## What we store and what we don't
 
@@ -40,6 +41,7 @@ Built for the Cubbie Hackathon, Track 3: an AI that joins a group chat and makes
 | If someone took it over with 🙋: the old owner's user id and the claimer's user id | |
 | The ids of channels where `/receipts on` was run | |
 | The demo clock offset from `!tick`, in seconds | |
+| Your private Cubbie topic, if you ran `/receipts link`. It works like a password and is never logged | Anything Cubbie says on the topic other than a valid sos |
 
 State lives in one JSON file (`state.json`) written atomically. `/forgetme` deletes everything the bot has on you. `/receipts off` stops tracking a channel. Nudges go by DM. Overdue items are never posted in the channel. When you run `/receipts board` you see only your own overdue items, in a reply only you can see.
 
@@ -61,6 +63,7 @@ Then fill in `.env`:
 2. OAuth2 URL generator: scopes `bot` and `applications.commands`. Permissions: Send Messages, Read Message History, Add Reactions, Embed Links. Open the URL and invite it to your server.
 3. Right click your server, Copy Server ID, paste it as `GUILD_ID`.
 4. Add `ANTHROPIC_API_KEY`, or set `USE_LLM=false` to run on rules only.
+5. Leave `NTFY_URL` alone unless you self-host ntfy. It defaults to `https://ntfy.sh`.
 
 Run it:
 
@@ -94,6 +97,8 @@ USE_LLM=false pytest
 | `/done <what>` | mark one of your promises done |
 | `/awards` | this week's awards |
 | `/forgetme` | delete everything the bot has on you |
+| `/receipts link` | connect Cubbie. you get a private token by DM |
+| `/receipts unlink` | disconnect Cubbie |
 | `/help` | short help |
 | `!demo` | seed a fake CSE 511 group chat (owner, demo role, or `DEMO_USER_IDS`) |
 | `!tick <hours>` | move the demo clock forward (owner, demo role, or `DEMO_USER_IDS`) |
@@ -108,9 +113,38 @@ store.py    receipts, channel opt in, forgetme, atomic save
 nudges.py   what is due soon, demo clock
 awards.py   weekly awards from the store
 voice.py    every line the bot says
+cubbie.py   the lines we send to cubbie, the sos lines we accept, what counts as fresh
+relay.py    ntfy over aiohttp, post and poll
 demo.py     the !demo seed
 tests/      pytest, runs in CI with USE_LLM=false
 ```
+
+## The Cubbie link
+
+Receipts and Cubbie talk through [ntfy.sh](https://ntfy.sh), a plain pub/sub relay. There is no account and no shared server. Each linked user gets a random private topic, `receipts-` plus 16 url-safe characters. Whoever knows the topic can read and write it, so it works like a password. It only ever goes out in a DM, and the logs never contain it.
+
+`/receipts link` makes the topic, DMs it to you with "save this in Cubbie as RECEIPTS_LINK_TOKEN. it works like a password." and saves it. Running it again makes a new topic and the old one stops working. `/receipts unlink` and `/forgetme` both delete it.
+
+What the bot posts to your topic, one line each:
+
+```
+receipt id=ab12cd34 what=intro slides due=2026-10-29T17:00:00-07:00 channel=cse511-group
+receipt id=ab12cd34 event=done
+receipt id=ab12cd34 event=reassigned
+receipt id=ab12cd34 event=removed
+```
+
+The first line goes out when a promise is caught. `due` is ISO 8601 with offset, or `none`. When someone takes a task over with 🙋, the old owner's topic gets `event=reassigned` and the new owner's topic gets a fresh `receipt` line, if they are linked.
+
+What the bot reads back. It polls every linked topic every 5 seconds with `since=<last id>` and accepts exactly one shape:
+
+```
+sos id=ab12cd34 source=cubbie
+```
+
+It has to be your own open receipt, the line has to be under 10 minutes old, and each ntfy message counts once. Anything else on the topic is ignored, including the bot's own lines. A valid sos runs the same flow as tapping 🆘 on a nudge: the channel gets "Yash could use a hand with intro slides. anyone?" and the first 🙋 takes it. A second sos for a receipt that already has an open help post does nothing.
+
+If ntfy is down, receipts keep working. A failed post or poll is logged by error type only and the bot moves on.
 
 ## What's next
 

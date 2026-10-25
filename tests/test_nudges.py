@@ -1,7 +1,9 @@
 # tests for nudges.py. uses a real store, no mocks.
 from datetime import timedelta
 
-from nudges import demo_now, due_soon, tick, when_label
+import pytest
+
+from nudges import demo_now, due_soon, tick, valid_tick_hours, when_label
 
 
 def add(store, now, due, what="send slides"):
@@ -83,3 +85,13 @@ def test_when_label_today_and_minutes(now):
     assert when_label(now.replace(hour=23, minute=59), now) == "today"
     assert when_label(now.replace(hour=17, minute=30), now) == "today at 5:30pm"
     assert when_label(now.replace(hour=9, minute=0), now) == "today at 9am"
+
+
+@pytest.mark.parametrize("hours", [0.5, 1, 24, 336])
+def test_valid_tick_hours_ok(hours):
+    assert valid_tick_hours(hours) is True
+
+
+@pytest.mark.parametrize("hours", [0, -1, 336.5, 1e12, float("inf"), float("-inf"), float("nan")])
+def test_valid_tick_hours_rejects(hours):
+    assert valid_tick_hours(hours) is False

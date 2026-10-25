@@ -1,11 +1,10 @@
-"""Every string the bot says, as short lowercase-casual templates.
-
-Names are plain text and no template contains an at sign. Pings happen
-elsewhere via Discord's own mention mechanism.
-"""
+# every line the bot says, as short lowercase templates.
+# names are plain text and no template has an at sign. the bot never pings anyone.
 import re
 
 MAX_POLISH_LEN = 120
+MAX_BOARD_CHARS = 1900
+MORE_LINE = "...and more. use /done to clear some."
 END_OF_DAY = (23, 59)
 FALLBACK_NAME = "someone"
 
@@ -70,6 +69,15 @@ def _lines(receipts):
     return [f"• {r.what} (due {_date_label(r.due)})" for r in receipts]
 
 
+def _cap(text: str) -> str:
+    # discord rejects messages over 2000 chars. cut at a whole line and say there is more.
+    if len(text) <= MAX_BOARD_CHARS:
+        return text
+    room = MAX_BOARD_CHARS - len(MORE_LINE) - 1
+    kept = text[:room].rsplit("\n", 1)[0]
+    return kept + "\n" + MORE_LINE
+
+
 def board_text(groups, names, include_overdue):
     sections = [("open", None), ("done", "done:")]
     if include_overdue:
@@ -85,7 +93,7 @@ def board_text(groups, names, include_overdue):
             blocks.append("\n".join([f"{_name(names, user_id)}"] + body))
     if not blocks:
         return "nothing on the board yet."
-    return "\n\n".join(blocks)
+    return _cap("\n\n".join(blocks))
 
 
 def overdue_text(groups, names):
@@ -96,7 +104,7 @@ def overdue_text(groups, names):
             blocks.append("\n".join([_name(names, user_id)] + lines))
     if not blocks:
         return "nothing overdue."
-    return "\n\n".join(blocks)
+    return _cap("\n\n".join(blocks))
 
 
 def _join_names(user_ids, names):
@@ -115,7 +123,7 @@ _AWARD_LINES = (
     ("most_reliable", lambda who, v: f"most reliable: {who}. said it, did it."),
     ("biggest_comeback", lambda who, v: f"biggest comeback: {who}. back on track."),
     ("most_promises", lambda who, v: f"most promises: {who}, with {_count(v, 'promise', 'promises')}. big energy."),
-    ("the_closer", lambda who, v: f"the closer: {who}. finished things right at the buzzer."),
+    ("the_closer", lambda who, v: f"the closer: {who}. jumped in when someone needed a hand."),
 )
 
 
@@ -172,6 +180,10 @@ def demo_banner():
 
 def tick_text(hours, when):
     return f"moved the clock {_count(hours, 'hour', 'hours')} ahead. pretending it is {when} now."
+
+
+def tick_bad_text():
+    return "give me a number of hours between 0 and 336."
 
 
 _DIGITS = re.compile(r"\d+")

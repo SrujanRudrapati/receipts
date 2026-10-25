@@ -43,7 +43,7 @@ def all_outputs(groups):
         voice.awards_text(awards, NAMES), voice.help_text(), voice.on_text(),
         voice.off_text(), voice.forgot_text(3), voice.undo_text(),
         voice.done_text("slides"), voice.not_found_text(), voice.demo_banner(),
-        voice.tick_text(24, "thu 5pm"),
+        voice.tick_text(24, "thu 5pm"), voice.tick_bad_text(),
     ]
 
 
@@ -137,3 +137,49 @@ def test_polish():
     assert voice.polish("t", set(), set(), boom) == "t"
     assert voice.polish("t", set(), set(), lambda s: "nicer") == "nicer"
     assert voice.polish("t", set(), set(), lambda s: "@everyone") == "t"
+
+
+HOSTILE = ["@everyone", "@here", "<@&1>", "@everyone <@&1> @here pizza"]
+
+
+@pytest.mark.parametrize("bad", HOSTILE)
+def test_hostile_model_what_never_reaches_voice(now, bad):
+    import detect
+
+    reply = '{"is_promise": true, "what": "' + bad + ' pizza", "due_text": null}'
+    got = detect.extract("I'll get the pizza", 1, now, llm_call=lambda s: reply)
+    for out in (voice.help_wanted("Yash", got["what"]), voice.who_answer("Yash", got["what"], "l"),
+                voice.claimed_channel("Suraj", got["what"]), voice.done_text(got["what"])):
+        assert "@" not in out and "<@" not in out
+
+
+@pytest.mark.parametrize("bad", HOSTILE)
+def test_hostile_chat_text_never_reaches_voice(now, bad):
+    import detect
+
+    got = detect.extract(f"I'll bring {bad} chips", 1, now, llm_call=lambda s: "no")
+    assert "@" not in voice.help_wanted("Yash", got["what"])
+    assert "<@" not in voice.done_text(got["what"])
+
+
+def test_board_is_capped(tz):
+    due = datetime(2026, 10, 29, 17, 0, tzinfo=tz)
+    many = {1: {"open": [rec(f"task number {i} with some words", due) for i in range(200)],
+                "done": [], "overdue": []}}
+    text = voice.board_text(many, NAMES, False)
+    assert len(text) <= 1900
+    assert text.endswith("...and more. use /done to clear some.")
+    assert "• task number 0 " in text
+
+
+def test_short_board_not_cut(groups):
+    assert "and more" not in voice.board_text(groups, NAMES, True)
+
+
+def test_closer_line_matches_claims():
+    res = {"the_closer": {"user_ids": [1], "value": 2}}
+    assert voice.awards_text(res, NAMES) == "the closer: Yash. jumped in when someone needed a hand."
+
+
+def test_tick_bad_text():
+    assert voice.tick_bad_text() == "give me a number of hours between 0 and 336."

@@ -59,7 +59,11 @@ def _in_window(when: datetime | None, start: datetime, end: datetime) -> bool:
 def _reliable(made: list) -> dict | None:
     total = Counter(r.user_id for r in made)
     done = Counter(r.user_id for r in made if r.status == "done")
-    return _winners({u: done[u] / total[u] for u in total})
+    found = _winners({u: done[u] / total[u] for u in total})
+    # nobody finished anything, so nobody gets "most reliable".
+    if found is None or found["value"] == 0:
+        return None
+    return found
 
 
 def _comeback(receipts: list, start: datetime, end: datetime) -> dict | None:
@@ -82,8 +86,12 @@ def _closer(receipts: list, start: datetime, end: datetime) -> dict | None:
     return _winners(dict(claims))
 
 
-def compute(store, week_start: datetime, week_end: datetime) -> dict:
+def compute(store, week_start: datetime, week_end: datetime,
+            channel_id: int | None = None) -> dict:
     receipts = store.all_receipts()
+    # awards for one channel only count that channel, so names don't leak between groups.
+    if channel_id is not None:
+        receipts = [r for r in receipts if r.channel_id == channel_id]
     made = [r for r in receipts if _in_window(r.created_at, week_start, week_end)]
     counts = Counter(r.user_id for r in made)
     return {

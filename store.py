@@ -85,7 +85,11 @@ class Store:
             "last_awards_week": self._awards_week,
         }
         tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2))
+        with open(tmp, "w") as f:
+            f.write(json.dumps(data, indent=2))
+            # push it to disk before the swap, so a power cut can't leave an empty file.
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, self.path)
 
     # receipts

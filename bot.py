@@ -223,6 +223,10 @@ async def handle_dm_reaction(payload, emoji: str) -> None:
         log.info("nudge_ack receipt=%s", receipt.id)
     elif emoji == HELP_EMOJI:
         store.unlink_message(payload.message_id)
+        # the channel was turned off, so we don't post there anymore.
+        if not store.is_tracked(receipt.channel_id):
+            log.info("help_channel_off receipt=%s", receipt.id)
+            return
         channel = await get_channel(receipt.channel_id)
         post = await channel.send(voice.help_wanted(await name_of(receipt.user_id), receipt.what))
         await post.add_reaction(CLAIM_EMOJI)
@@ -248,28 +252,45 @@ async def handle_claim(payload, receipt_id: str) -> None:
 
 # ---- scheduler ----
 
+async def send_nudges(current: datetime) -> None:
+    for receipt in nudges.due_soon(store, current):
+        # mark it first, so a failure below can't make us nudge twice.
+        store.mark_nudged(receipt.id)
+        try:
+            text = voice.nudge_dm(receipt.what, nudges.when_label(receipt.due, current))
+            message = await dm(receipt.user_id, text, reactions=(DONE_EMOJI, HELP_EMOJI))
+            if message is not None:
+                store.link_message(message.id, "nudge", receipt.id)
+            log.info("nudge_sent receipt=%s", receipt.id)
+        except Exception as error:
+            # one bad receipt should not stop the rest. only the error type is logged.
+            log.info("nudge_failed receipt=%s error=%s", receipt.id, type(error).__name__)
+
+
+async def post_awards(current: datetime) -> None:
+    # save the week before sending, so one broken channel can't make us post again every 30s.
+    store.last_awards_week = awards.week_key(current)
+    for channel_id in store.tracked_channels():
+        try:
+            text = await awards_message(current, channel_id)
+            channel = await get_channel(channel_id)
+            await channel.send(text)
+        except discord.HTTPException:
+            log.info("awards_failed channel=%s", channel_id)
+    log.info("awards_posted")
+
+
 async def run_scheduler_once() -> None:
     """send nudges that are due and post awards on friday at 5."""
     current = now()
-    for receipt in nudges.due_soon(store, current):
-        text = voice.nudge_dm(receipt.what, nudges.when_label(receipt.due, current))
-        message = await dm(receipt.user_id, text, reactions=(DONE_EMOJI, HELP_EMOJI))
-        if message is not None:
-            store.link_message(message.id, "nudge", receipt.id)
-        store.mark_nudged(receipt.id)
-        log.info("nudge_sent receipt=%s", receipt.id)
+    await send_nudges(current)
     if awards.should_post(current, store.last_awards_week):
-        text = await awards_message(current)
-        for channel_id in store.tracked_channels():
-            channel = await get_channel(channel_id)
-            await channel.send(text)
-        store.last_awards_week = awards.week_key(current)
-        log.info("awards_posted")
+        await post_awards(current)
 
 
-async def awards_message(current: datetime) -> str:
+async def awards_message(current: datetime, channel_id: int | None = None) -> str:
     start, end = awards.week_bounds(current)
-    result = awards.compute(store, start, end)
+    result = awards.compute(store, start, end, channel_id)
     user_ids = [uid for award in result.values() if award for uid in award["user_ids"]]
     return voice.awards_text(result, await names_for(user_ids))
 
@@ -280,6 +301,12 @@ async def scheduler():
         await run_scheduler_once()
     except Exception:
         log.exception("scheduler_error")
+
+
+@bot.event
+async def on_command_error(ctx: commands.Context, error: commands.CommandError):
+    # the default handler logs what the user typed after "!". we only log the error type.
+    log.info("command_error type=%s", type(error).__name__)
 
 
 @bot.event
@@ -300,13 +327,21 @@ def can_run_demo(ctx: commands.Context) -> bool:
     return any(role.name == DEMO_ROLE for role in roles)
 
 
+def clock_label(when: datetime) -> str:
+    # like "thu oct 22 2:30pm". built by hand because %-I does not work on windows.
+    return when.strftime("%a %b %d").lower() + " " + nudges.clock_text(when)
+
+
 @bot.command(name="tick")
 async def tick(ctx: commands.Context, hours: float):
     if not can_run_demo(ctx):
         return
+    if not nudges.valid_tick_hours(hours):
+        await ctx.send(voice.tick_bad_text())
+        return
     nudges.tick(store, hours)
     await run_scheduler_once()
-    await ctx.send(voice.tick_text(hours, now().strftime("%a %b %d %-I:%M%p").lower()))
+    await ctx.send(voice.tick_text(hours, clock_label(now())))
     log.info("tick hours=%s", hours)
 
 
@@ -320,7 +355,11 @@ async def demo_command(ctx: commands.Context):
 
 # ---- slash commands ----
 
-receipts_group = app_commands.Group(name="receipts", description="track promises in this channel")
+# anyone in the server can turn it on or off (the spec says "someone ran /receipts on").
+# guild_only just keeps these out of DMs.
+receipts_group = app_commands.Group(
+    name="receipts", description="track promises in this channel", guild_only=True,
+)
 
 
 @receipts_group.command(name="on", description="start catching promises here")
@@ -339,14 +378,18 @@ async def receipts_off(interaction: discord.Interaction):
 
 @receipts_group.command(name="board", description="who promised what")
 async def receipts_board(interaction: discord.Interaction):
+    # defer first. looking up names can take longer than discord's 3 second window.
+    await interaction.response.defer()
     groups = store.board(interaction.channel_id, now())
     names = await names_for(groups.keys())
-    await interaction.response.send_message(voice.board_text(groups, names, include_overdue=False))
-    # overdue only goes to the person who asked
-    await interaction.followup.send(voice.overdue_text(groups, names), ephemeral=True)
+    await interaction.followup.send(voice.board_text(groups, names, include_overdue=False))
+    # overdue only goes to the person who asked, and only their own items.
+    mine = {uid: buckets for uid, buckets in groups.items() if uid == interaction.user.id}
+    await interaction.followup.send(voice.overdue_text(mine, names), ephemeral=True)
 
 
 @bot.tree.command(name="done", description="mark one of your promises done")
+@app_commands.guild_only()
 @app_commands.describe(what="a few words from the promise")
 async def done_command(interaction: discord.Interaction, what: str):
     receipt = store.find_open(interaction.user.id, interaction.channel_id, what)
@@ -359,14 +402,16 @@ async def done_command(interaction: discord.Interaction, what: str):
 
 
 @bot.tree.command(name="awards", description="this week's receipts awards")
+@app_commands.guild_only()
 async def awards_command(interaction: discord.Interaction):
     await interaction.response.defer()
-    await interaction.followup.send(await awards_message(now()))
+    await interaction.followup.send(await awards_message(now(), interaction.channel_id))
 
 
 @bot.tree.command(name="forgetme", description="delete everything receipts has on you")
 async def forgetme_command(interaction: discord.Interaction):
     count = store.forget(interaction.user.id)
+    _name_cache.pop(interaction.user.id, None)
     await interaction.response.send_message(voice.forgot_text(count), ephemeral=True)
     log.info("forget user=%s count=%s", interaction.user.id, count)
 

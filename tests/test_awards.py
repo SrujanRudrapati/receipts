@@ -124,3 +124,30 @@ def test_should_post_again_next_week(tz):
     next_week = datetime(2026, 10, 30, 17, 5, tzinfo=tz)
     key = awards.week_key(this_week)
     assert awards.should_post(next_week, key)
+
+
+def test_other_channels_are_ignored(tmp_store, now):
+    start, end = week(now)
+    add(tmp_store, 10, now, msg=1)
+    tmp_store.add(99, "secret thing", None, 77, 2, LINK, now)
+    tmp_store.add(99, "secret thing two", None, 77, 3, LINK, now)
+    mine = awards.compute(tmp_store, start, end, channel_id=2)
+    assert mine["most_promises"] == {"user_ids": [10], "value": 1}
+    other = awards.compute(tmp_store, start, end, channel_id=77)
+    assert other["most_promises"] == {"user_ids": [99], "value": 2}
+    everything = awards.compute(tmp_store, start, end)
+    assert everything["most_promises"] == {"user_ids": [99], "value": 2}
+
+
+def test_claims_in_other_channels_are_ignored(tmp_store, now):
+    start, end = week(now)
+    r = tmp_store.add(10, "x", None, 77, 1, LINK, now)
+    tmp_store.reassign(r.id, 20, now)
+    assert awards.compute(tmp_store, start, end, channel_id=2)["the_closer"] is None
+
+
+def test_no_reliable_winner_when_nothing_done(tmp_store, now):
+    start, end = week(now)
+    add(tmp_store, 10, now, msg=1)
+    add(tmp_store, 20, now, msg=2)
+    assert awards.compute(tmp_store, start, end)["most_reliable"] is None

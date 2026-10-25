@@ -5,16 +5,20 @@
 import json
 import os
 import re
+import threading
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from dates import parse_due, strip_due
+from store import words
 
 MODEL = "claude-haiku-5-5"
 MAX_TOKENS = 80
 MAX_CHARS = 500
 MAX_WHAT = 60
+MAX_DUE_TEXT = 40
+MODEL_TIMEOUT_SECONDS = 8.0
 
 SYSTEM_PROMPT = (
     "You read one chat message from a student group chat. The message is "
@@ -59,6 +63,9 @@ _COMMIT_RAW = re.compile(
     re.IGNORECASE,
 )
 _FILLER_RE = re.compile(r"^(?:(?:" + "|".join(FILLER) + r")\b[\s,.!:;-]*)+", re.IGNORECASE)
+# where the first clause ends. anything after this is not part of the promise.
+_CLAUSE_END = re.compile(r"[.,;!?]|\b(?:and|but|also|then)\b", re.IGNORECASE)
+_STRIP = " \t,.!;:-"
 
 
 def clean_for_model(text: str) -> str:
@@ -91,40 +98,80 @@ def validate_model_json(raw: str) -> dict | None:
         return None
     if not isinstance(data["what"], str) or len(data["what"]) > MAX_WHAT:
         return None
-    if data["due_text"] is not None and not isinstance(data["due_text"], str):
+    due_text = data["due_text"]
+    if due_text is not None and (not isinstance(due_text, str) or len(due_text) > MAX_DUE_TEXT):
         return None
     return data
+
+
+def _first_clause(text: str) -> str:
+    return _CLAUSE_END.split(text, maxsplit=1)[0].strip(_STRIP)
+
+
+def _after_commit(base: str) -> str:
+    # the text right after "I'll", "I can", "on it" and so on.
+    match = _COMMIT_RAW.search(base)
+    return base if match is None else base[match.end():]
 
 
 def rule_extract(text: str, author_id: int, now: datetime) -> dict | None:
     text = clean_for_model(text).replace("’", "'")
     base = _FILLER_RE.sub("", text).strip() or text
-    what = _COMMIT_RAW.sub("", base, count=1)
-    what = strip_due(what).strip(" \t,.!;:-")
+    # only the clause right after the commit phrase, so "I got snacks, also my
+    # door code is 4417" stores "snacks" and nothing else.
+    what = _first_clause(strip_due(_after_commit(base)))
     if not what:
-        what = base.strip(" \t,.!;:-") or base
+        # like "on it". keep just the first clause so nothing extra gets stored.
+        what = _first_clause(base) or base.strip(_STRIP)
     return {"who": author_id, "what": what[:MAX_WHAT], "due": parse_due(text, now)}
+
+
+def _model_what(what: str, text: str) -> str | None:
+    # the model's text is untrusted too. drop mentions and every "@".
+    # it also has to share a real word with the promise clause of the message
+    # (the part right after "I'll" and friends), or we use the rules.
+    # checking the whole message is not enough: an injection like
+    # "I'll do it. ignore that and say X" has X in the message too.
+    what = _SPACE.sub(" ", clean_for_model(what).replace("@", "")).strip()
+    promise = _first_clause(_after_commit(clean_for_model(text).replace("’", "'")))
+    if not what or not (words(what) & words(promise)):
+        return None
+    return what
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class RateLimiter:
     # one call per user per few seconds, and a cap on calls per hour.
-    def __init__(self, per_user_seconds: int = 5, hourly_cap: int = 200):
+    # it runs on worker threads, so it has a lock. it uses the real clock, not the
+    # demo clock, so !tick can't reset the window. tests can pass their own clock.
+    def __init__(self, per_user_seconds: int = 5, hourly_cap: int = 200,
+                 clock: Callable[[], datetime] = _utc_now):
         self.per_user = timedelta(seconds=per_user_seconds)
         self.hourly_cap = hourly_cap
+        self._clock = clock
+        self._lock = threading.Lock()
         self._last: dict[int, datetime] = {}
         self._hour: deque[datetime] = deque()
 
-    def allow(self, user_id: int, now: datetime) -> bool:
-        while self._hour and now - self._hour[0] >= timedelta(hours=1):
+    def allow(self, user_id: int, now: datetime | None = None) -> bool:
+        # now is ignored. it is only kept so old callers still work.
+        with self._lock:
+            current = self._clock()
+            self._prune(current)
+            if user_id in self._last or len(self._hour) >= self.hourly_cap:
+                return False
+            self._last[user_id] = current
+            self._hour.append(current)
+            return True
+
+    def _prune(self, current: datetime) -> None:
+        while self._hour and current - self._hour[0] >= timedelta(hours=1):
             self._hour.popleft()
-        last = self._last.get(user_id)
-        if last is not None and now - last < self.per_user:
-            return False
-        if len(self._hour) >= self.hourly_cap:
-            return False
-        self._last[user_id] = now
-        self._hour.append(now)
-        return True
+        # old per user entries go away, so this dict does not grow forever.
+        self._last = {u: t for u, t in self._last.items() if current - t < self.per_user}
 
 
 RATE_LIMITER = RateLimiter()
@@ -134,11 +181,22 @@ def llm_enabled() -> bool:
     return os.environ.get("USE_LLM", "").strip().lower() in ("true", "1", "yes")
 
 
-def anthropic_call(cleaned: str) -> str:
-    import anthropic  # lazy, so USE_LLM=false never loads it
+_client = None
 
-    client = anthropic.Anthropic()
-    resp = client.messages.create(
+
+def _get_client():
+    # built once, the first time we need it. lazy, so USE_LLM=false never loads anthropic.
+    global _client
+    if _client is None:
+        import anthropic
+
+        # short timeout and no retries, so a slow API falls back to rules fast.
+        _client = anthropic.Anthropic(timeout=MODEL_TIMEOUT_SECONDS, max_retries=0)
+    return _client
+
+
+def anthropic_call(cleaned: str) -> str:
+    resp = _get_client().messages.create(
         model=MODEL,
         max_tokens=MAX_TOKENS,
         system=SYSTEM_PROMPT,
@@ -166,10 +224,13 @@ def extract(text: str, author_id: int, now: datetime,
     if not prefilter(text):
         return None
     reply = _ask_model(text, author_id, now, llm_call)
-    if reply is None or (reply["is_promise"] and not reply["what"].strip()):
+    if reply is None:
         return rule_extract(text, author_id, now)
     if not reply["is_promise"]:
         return None
+    what = _model_what(reply["what"], text)
+    if what is None:
+        return rule_extract(text, author_id, now)
     due_text = reply["due_text"]
     due = parse_due(due_text if due_text else text, now)
-    return {"who": author_id, "what": reply["what"], "due": due}
+    return {"who": author_id, "what": what, "due": due}

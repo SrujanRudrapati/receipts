@@ -51,6 +51,13 @@ def test_reassign_sets_fields(tmp_store, now):
     assert tmp_store.reassign("nope", 2, now) is None
 
 
+def test_reassign_keeps_nudged(tmp_store, now):
+    # the claim DM already says when it is due, so no second nudge right away
+    r = make(tmp_store, now, user=1)
+    tmp_store.mark_nudged(r.id)
+    assert tmp_store.reassign(r.id, 2, now).nudged is True
+
+
 def test_mark_nudged(tmp_store, now):
     r = make(tmp_store, now)
     tmp_store.mark_nudged(r.id)
@@ -188,3 +195,14 @@ def test_atomic_save_survives_crash(tmp_path, now, monkeypatch):
     monkeypatch.undo()
     fresh = Store(path)
     assert [r.id for r in fresh.all_receipts()] == [good.id]
+
+
+def test_save_fsyncs_before_replace(tmp_path, now, monkeypatch):
+    calls = []
+    real_fsync, real_replace = os.fsync, os.replace
+    monkeypatch.setattr(os, "fsync", lambda fd: calls.append("fsync") or real_fsync(fd))
+    monkeypatch.setattr(os, "replace", lambda a, b: calls.append("replace") or real_replace(a, b))
+    s = Store(tmp_path / "state.json")
+    make(s, now)
+    assert calls == ["fsync", "replace"]
+    assert Store(tmp_path / "state.json").all_receipts()

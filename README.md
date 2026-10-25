@@ -35,8 +35,13 @@ Built for the Cubbie Hackathon, Track 3: an AI that joins a group chat and makes
 | Open or done | Anything from channels without `/receipts on` |
 | Channel id and a link to the original message | Reactions or who reacted, beyond the one action they trigger |
 | Ids of the bot's own nudge and help messages, so reactions on them can be routed | Logs with message content. Logs only have ids and event names |
+| When a promise was made, when it was marked done, and when someone claimed it | |
+| Whether you already got a nudge for it, so you only get one | |
+| If someone took it over with 🙋: the old owner's user id and the claimer's user id | |
+| The ids of channels where `/receipts on` was run | |
+| The demo clock offset from `!tick`, in seconds | |
 
-State lives in one JSON file (`state.json`) written atomically. `/forgetme` deletes everything the bot has on you. `/receipts off` stops tracking a channel. Nudges go by DM, and overdue items are only ever shown to the person who asked for the board, in a reply only they can see.
+State lives in one JSON file (`state.json`) written atomically. `/forgetme` deletes everything the bot has on you. `/receipts off` stops tracking a channel. Nudges go by DM. Overdue items are never posted in the channel. When you run `/receipts board` you see only your own overdue items, in a reply only you can see.
 
 ## Setup
 

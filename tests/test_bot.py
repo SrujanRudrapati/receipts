@@ -20,6 +20,9 @@ def bot_module(monkeypatch, tmp_path):
     monkeypatch.setenv("USE_LLM", "false")
     monkeypatch.setenv("STATE_PATH", str(tmp_path / "state.json"))
     monkeypatch.delenv("GUILD_ID", raising=False)
+    # a local .env may set this. load_dotenv() runs on reload and refills a missing variable,
+    # but never overrides one that exists, so it is set to empty rather than deleted.
+    monkeypatch.setenv("DEMO_USER_IDS", "")
     import bot
 
     return importlib.reload(bot)

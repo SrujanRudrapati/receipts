@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -40,6 +41,7 @@ def parse_user_ids(raw: str) -> frozenset[int]:
 DEMO_USER_IDS = parse_user_ids(os.environ.get("DEMO_USER_IDS", ""))
 
 SCHEDULER_SECONDS = 30
+CUBBIE_POLL_SECONDS = 5
 RECEIPT_EMOJI = "🧾"
 DONE_EMOJI = "✅"
 UNDO_EMOJI = "❌"
@@ -74,6 +76,7 @@ bot = commands.Bot(
 store = Store(STATE_PATH)
 relay_client = relay.Relay(NTFY_URL)
 _name_cache: dict[int, str] = {}
+_cubbie_cursors: dict[str, cubbie.Cursor] = {}
 
 
 def now() -> datetime:
@@ -152,6 +155,44 @@ async def cubbie_caught(receipt, channel) -> None:
 async def cubbie_update(receipt, event: str, user_id: int | None = None) -> None:
     owner = receipt.user_id if user_id is None else user_id
     await tell_cubbie(owner, receipt.id, cubbie.update_line(receipt.id, event))
+
+
+async def handle_sos(user_id: int, receipt_id: str) -> None:
+    """an sos line from one user's topic. only their own open receipt counts, and only once."""
+    receipt = store.get(receipt_id)
+    if receipt is None or receipt.user_id != user_id or receipt.status != "open":
+        log.info("cubbie_sos_rejected user=%s receipt=%s", user_id, receipt_id)
+        return
+    if store.has_help_post(receipt.id):
+        log.info("cubbie_sos_repeat receipt=%s", receipt.id)
+        return
+    log.info("cubbie_sos receipt=%s", receipt.id)
+    await request_help(receipt)
+
+
+async def poll_cubbie_once() -> None:
+    """read every linked topic once. one bad topic must not stop the others."""
+    for user_id, topic in store.cubbie_links().items():
+        cursor = _cubbie_cursors.setdefault(topic, cubbie.Cursor())
+        try:
+            messages = await relay_client.poll(topic, cursor.since)
+        except Exception as error:
+            log.info("cubbie_poll_failed user=%s error=%s", user_id, type(error).__name__)
+            continue
+        for receipt_id in cubbie.sos_ids(messages, time.time(), cursor):
+            try:
+                await handle_sos(user_id, receipt_id)
+            except Exception as error:
+                log.info("cubbie_sos_failed receipt=%s error=%s", receipt_id, type(error).__name__)
+
+
+@tasks.loop(seconds=CUBBIE_POLL_SECONDS)
+async def cubbie_poller():
+    try:
+        await poll_cubbie_once()
+    except Exception as error:
+        # no traceback here on purpose. an aiohttp message can carry the url, and the url is the topic.
+        log.info("cubbie_poller_error error=%s", type(error).__name__)
 
 
 # ---- catching promises ----
@@ -273,15 +314,20 @@ async def handle_dm_reaction(payload, emoji: str) -> None:
         log.info("nudge_ack receipt=%s", receipt.id)
     elif emoji == HELP_EMOJI:
         store.unlink_message(payload.message_id)
-        # the channel was turned off, so we don't post there anymore.
-        if not store.is_tracked(receipt.channel_id):
-            log.info("help_channel_off receipt=%s", receipt.id)
-            return
-        channel = await get_channel(receipt.channel_id)
-        post = await channel.send(voice.help_wanted(await name_of(receipt.user_id), receipt.what))
-        await post.add_reaction(CLAIM_EMOJI)
-        store.link_message(post.id, "help", receipt.id)
-        log.info("help_requested receipt=%s", receipt.id)
+        await request_help(receipt)
+
+
+async def request_help(receipt) -> None:
+    """the 🆘 flow: ask the receipt's channel for a hand. shared by the nudge DM and the cubbie sos."""
+    # the channel was turned off, so we don't post there anymore.
+    if not store.is_tracked(receipt.channel_id):
+        log.info("help_channel_off receipt=%s", receipt.id)
+        return
+    channel = await get_channel(receipt.channel_id)
+    post = await channel.send(voice.help_wanted(await name_of(receipt.user_id), receipt.what))
+    await post.add_reaction(CLAIM_EMOJI)
+    store.link_message(post.id, "help", receipt.id)
+    log.info("help_requested receipt=%s", receipt.id)
 
 
 async def handle_claim(payload, receipt_id: str) -> None:
@@ -369,6 +415,8 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError):
 async def on_ready():
     if not scheduler.is_running():
         scheduler.start()
+    if not cubbie_poller.is_running():
+        cubbie_poller.start()
     log.info("ready guilds=%s", len(bot.guilds))
 
 
@@ -524,7 +572,19 @@ async def sync_commands() -> None:
 bot.setup_hook = sync_commands
 
 
+async def main() -> None:
+    # same as bot.run, but we get to close the ntfy session on the way out.
+    async with bot:
+        try:
+            await bot.start(TOKEN)
+        finally:
+            await relay_client.close()
+
+
 if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit("DISCORD_TOKEN is missing. copy .env.example to .env and fill it in.")
-    bot.run(TOKEN, log_handler=None)
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

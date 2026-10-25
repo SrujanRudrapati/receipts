@@ -237,6 +237,9 @@ class Store:
         if self._links.pop(message_id, None) is not None:
             self.save()
 
+    def has_help_post(self, receipt_id: str) -> bool:
+        return ("help", receipt_id) in self._links.values()
+
     # cubbie link. the topic works like a password, so it is never logged.
 
     def link_cubbie(self, user_id: int, topic: str) -> None:

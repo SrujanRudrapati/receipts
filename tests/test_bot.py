@@ -560,3 +560,155 @@ def test_cubbie_post_failure_logs_type_only_and_flow_continues(bot_module, linke
     assert receipt is not None
     assert f"cubbie_post_failed receipt={receipt.id} error=RuntimeError" in caplog.text
     assert "topic-of-user-1" not in caplog.text and "ntfy.sh" not in caplog.text
+
+
+# reading sos lines back from cubbie
+
+
+class FakePollRelay(FakeRelay):
+    def __init__(self):
+        super().__init__()
+        self.inbox = {}
+        self.polls = []
+
+    async def poll(self, topic, since):
+        self.polls.append((topic, since))
+        if self.broken:
+            raise RuntimeError(f"500 for https://ntfy.sh/{topic}/json")
+        return list(self.inbox.get(topic, []))
+
+
+def sos(receipt_id, message_id="m1", age=0, text=None):
+    import time
+    return {"id": message_id, "time": time.time() - age, "event": "message",
+            "message": text or f"sos id={receipt_id} source=cubbie"}
+
+
+@pytest.fixture
+def polling(bot_module, monkeypatch):
+    fake = FakePollRelay()
+    monkeypatch.setattr(bot_module, "relay_client", fake)
+    posted = []
+
+    async def add_reaction(emoji):
+        return None
+
+    async def get_channel(channel_id):
+        async def send(text):
+            posted.append((channel_id, text))
+            return NS(id=9000 + len(posted), add_reaction=add_reaction)
+        return NS(id=channel_id, name="cse511", send=send)
+    monkeypatch.setattr(bot_module, "get_channel", get_channel)
+
+    async def name_of(uid):
+        return {1: "Yash", 2: "Suraj"}[uid]
+    monkeypatch.setattr(bot_module, "name_of", name_of)
+    bot_module.store.link_cubbie(1, "receipts-topic-of-user-1")
+    bot_module.store.set_channel(10, True)
+    return fake, posted
+
+
+def test_poller_runs_every_five_seconds(bot_module):
+    assert bot_module.cubbie_poller.seconds == 5
+
+
+def test_sos_for_own_open_receipt_asks_the_channel(bot_module, polling, caplog):
+    fake, posted = polling
+    r = bot_module.store.add(1, "intro slides", None, 10, 20, "l", bot_module.now())
+    fake.inbox["receipts-topic-of-user-1"] = [sos(r.id)]
+    with caplog.at_level(logging.INFO):
+        asyncio.run(bot_module.poll_cubbie_once())
+    assert posted == [(10, "Yash could use a hand with intro slides. anyone?")]
+    assert bot_module.store.lookup_message(9001) == ("help", r.id)
+    assert f"cubbie_sos receipt={r.id}" in caplog.text
+    assert f"help_requested receipt={r.id}" in caplog.text
+    assert "topic-of-user-1" not in caplog.text
+
+
+def test_sos_cannot_touch_someone_elses_receipt(bot_module, polling, caplog):
+    fake, posted = polling
+    theirs = bot_module.store.add(2, "demo video", None, 10, 21, "l", bot_module.now())
+    fake.inbox["receipts-topic-of-user-1"] = [sos(theirs.id)]
+    with caplog.at_level(logging.INFO):
+        asyncio.run(bot_module.poll_cubbie_once())
+    assert posted == []
+    assert bot_module.store.has_help_post(theirs.id) is False
+    assert f"cubbie_sos_rejected user=1 receipt={theirs.id}" in caplog.text
+
+
+def test_sos_for_done_or_unknown_receipt_is_ignored(bot_module, polling):
+    fake, posted = polling
+    r = bot_module.store.add(1, "intro slides", None, 10, 20, "l", bot_module.now())
+    bot_module.store.mark_done(r.id, bot_module.now())
+    fake.inbox["receipts-topic-of-user-1"] = [sos(r.id), sos("deadbeef", message_id="m2")]
+    asyncio.run(bot_module.poll_cubbie_once())
+    assert posted == []
+
+
+def test_sos_old_message_is_ignored(bot_module, polling):
+    fake, posted = polling
+    r = bot_module.store.add(1, "intro slides", None, 10, 20, "l", bot_module.now())
+    fake.inbox["receipts-topic-of-user-1"] = [sos(r.id, age=601)]
+    asyncio.run(bot_module.poll_cubbie_once())
+    assert posted == []
+
+
+def test_sos_duplicate_and_repeat_only_ask_once(bot_module, polling):
+    fake, posted = polling
+    r = bot_module.store.add(1, "intro slides", None, 10, 20, "l", bot_module.now())
+    fake.inbox["receipts-topic-of-user-1"] = [sos(r.id, message_id="m1")]
+    asyncio.run(bot_module.poll_cubbie_once())
+    # the same ntfy message again, then a brand new sos for the same receipt
+    asyncio.run(bot_module.poll_cubbie_once())
+    fake.inbox["receipts-topic-of-user-1"] = [sos(r.id, message_id="m2")]
+    asyncio.run(bot_module.poll_cubbie_once())
+    assert len(posted) == 1
+
+
+def test_sos_ignores_other_lines(bot_module, polling):
+    fake, posted = polling
+    r = bot_module.store.add(1, "intro slides", None, 10, 20, "l", bot_module.now())
+    fake.inbox["receipts-topic-of-user-1"] = [
+        sos(r.id, text=f"receipt id={r.id} what=intro slides due=none channel=cse511"),
+        sos(r.id, message_id="m2", text=f"sos id={r.id} source=someone"),
+        sos(r.id, message_id="m3", text=f"SOS id={r.id} source=cubbie"),
+    ]
+    asyncio.run(bot_module.poll_cubbie_once())
+    assert posted == []
+
+
+def test_poll_passes_the_last_id_next_time(bot_module, polling):
+    fake, posted = polling
+    fake.inbox["receipts-topic-of-user-1"] = [sos("deadbeef", message_id="m7")]
+    asyncio.run(bot_module.poll_cubbie_once())
+    fake.inbox["receipts-topic-of-user-1"] = []
+    asyncio.run(bot_module.poll_cubbie_once())
+    assert fake.polls == [("receipts-topic-of-user-1", None), ("receipts-topic-of-user-1", "m7")]
+
+
+def test_poll_only_polls_linked_users(bot_module, polling):
+    fake, posted = polling
+    bot_module.store.link_cubbie(2, "receipts-topic-of-user-2")
+    bot_module.store.unlink_cubbie(1)
+    asyncio.run(bot_module.poll_cubbie_once())
+    assert [topic for topic, _ in fake.polls] == ["receipts-topic-of-user-2"]
+
+
+def test_poll_failure_logs_type_only(bot_module, polling, caplog):
+    fake, posted = polling
+    fake.broken = True
+    with caplog.at_level(logging.INFO):
+        asyncio.run(bot_module.poll_cubbie_once())
+    assert "cubbie_poll_failed user=1 error=RuntimeError" in caplog.text
+    assert "topic-of-user-1" not in caplog.text and "ntfy.sh" not in caplog.text
+
+
+def test_sos_when_channel_is_off_does_nothing(bot_module, polling, caplog):
+    fake, posted = polling
+    r = bot_module.store.add(1, "intro slides", None, 10, 20, "l", bot_module.now())
+    bot_module.store.set_channel(10, False)
+    fake.inbox["receipts-topic-of-user-1"] = [sos(r.id)]
+    with caplog.at_level(logging.INFO):
+        asyncio.run(bot_module.poll_cubbie_once())
+    assert posted == []
+    assert f"help_channel_off receipt={r.id}" in caplog.text

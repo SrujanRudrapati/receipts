@@ -241,3 +241,14 @@ def test_forget_drops_cubbie_topic(tmp_store, now):
     tmp_store.forget(5)
     assert tmp_store.cubbie_topic(5) is None
     assert tmp_store.cubbie_topic(6) == "receipts-someoneelse"
+
+
+def test_has_help_post(tmp_store, now):
+    r = make(tmp_store, now)
+    assert tmp_store.has_help_post(r.id) is False
+    tmp_store.link_message(801, "nudge", r.id)
+    assert tmp_store.has_help_post(r.id) is False
+    tmp_store.link_message(802, "help", r.id)
+    assert tmp_store.has_help_post(r.id) is True
+    tmp_store.unlink_message(802)
+    assert tmp_store.has_help_post(r.id) is False

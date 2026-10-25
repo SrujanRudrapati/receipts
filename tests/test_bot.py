@@ -257,6 +257,60 @@ def test_tick_good_hours(bot_module, monkeypatch):
     assert "%" not in sent[0]
 
 
+def test_can_run_demo_allows_env_user_ids(monkeypatch, tmp_path):
+    monkeypatch.setenv("DISCORD_TOKEN", "test-token")
+    monkeypatch.setenv("USE_LLM", "false")
+    monkeypatch.setenv("STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("DEMO_USER_IDS", " 42, 77,abc,, ")
+    import bot
+    module = importlib.reload(bot)
+    assert module.DEMO_USER_IDS == frozenset({42, 77})
+    ctx = NS(guild=NS(owner_id=1), author=NS(id=77, roles=[]))
+    assert module.can_run_demo(ctx) is True
+    ctx = NS(guild=NS(owner_id=1), author=NS(id=78, roles=[]))
+    assert module.can_run_demo(ctx) is False
+
+
+def test_demo_user_ids_default_empty(bot_module):
+    assert bot_module.DEMO_USER_IDS == frozenset()
+
+
+def _denied_ctx(sent):
+    async def send(text):
+        sent.append(text)
+    return NS(guild=NS(owner_id=1), author=NS(id=99, roles=[]), channel=NS(id=10), command=NS(name="tick"), send=send)
+
+
+def test_tick_denied_replies_and_logs(bot_module, caplog):
+    sent = []
+    with caplog.at_level(logging.INFO):
+        asyncio.run(bot_module.tick.callback(_denied_ctx(sent), 2))
+    assert sent == [bot_module.voice.demo_denied_text()]
+    assert bot_module.store.clock_offset_seconds == 0
+    assert "demo_denied command=tick user=99" in caplog.text
+
+
+def test_demo_denied_replies_and_logs(bot_module, caplog):
+    sent = []
+    bot_module.store.set_channel(10, True)
+    ctx = _denied_ctx(sent)
+    ctx.command = NS(name="demo")
+    with caplog.at_level(logging.INFO):
+        asyncio.run(bot_module.demo_command.callback(ctx))
+    assert sent == [bot_module.voice.demo_denied_text()]
+    assert "demo_denied command=demo user=99" in caplog.text
+
+
+def test_demo_in_untracked_channel_is_silent_for_runner(bot_module, caplog):
+    sent = []
+    ctx = _denied_ctx(sent)
+    ctx.author = NS(id=1, roles=[])
+    with caplog.at_level(logging.INFO):
+        asyncio.run(bot_module.demo_command.callback(ctx))
+    assert sent == []
+    assert "demo_denied" not in caplog.text
+
+
 def test_clock_label_is_portable(bot_module, tz):
     from datetime import datetime
     assert bot_module.clock_label(datetime(2026, 10, 22, 14, 5, tzinfo=tz)) == "thu oct 22 2:05pm"

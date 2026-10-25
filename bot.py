@@ -27,6 +27,15 @@ STATE_PATH = os.environ.get("STATE_PATH", "state.json")
 TZ = ZoneInfo(os.environ.get("TZ_NAME", "America/Phoenix"))
 DEMO_ROLE = os.environ.get("DEMO_ROLE", "receipts-demo")
 
+
+def parse_user_ids(raw: str) -> frozenset[int]:
+    """comma-separated discord user ids. blanks and non-numbers are dropped."""
+    parts = (part.strip() for part in raw.split(","))
+    return frozenset(int(part) for part in parts if part.isdigit())
+
+
+DEMO_USER_IDS = parse_user_ids(os.environ.get("DEMO_USER_IDS", ""))
+
 SCHEDULER_SECONDS = 30
 RECEIPT_EMOJI = "🧾"
 DONE_EMOJI = "✅"
@@ -324,10 +333,16 @@ async def on_ready():
 def can_run_demo(ctx: commands.Context) -> bool:
     if ctx.guild is None:
         return False
-    if ctx.author.id == ctx.guild.owner_id:
+    if ctx.author.id == ctx.guild.owner_id or ctx.author.id in DEMO_USER_IDS:
         return True
     roles = getattr(ctx.author, "roles", [])
     return any(role.name == DEMO_ROLE for role in roles)
+
+
+async def deny_demo(ctx: commands.Context) -> None:
+    """short reply and a log line when someone without demo rights tries a prefix command."""
+    await ctx.send(voice.demo_denied_text())
+    log.info("demo_denied command=%s user=%s", ctx.command.name, ctx.author.id)
 
 
 def clock_label(when: datetime) -> str:
@@ -338,6 +353,7 @@ def clock_label(when: datetime) -> str:
 @bot.command(name="tick")
 async def tick(ctx: commands.Context, hours: float):
     if not can_run_demo(ctx):
+        await deny_demo(ctx)
         return
     if not nudges.valid_tick_hours(hours):
         await ctx.send(voice.tick_bad_text())
@@ -350,7 +366,10 @@ async def tick(ctx: commands.Context, hours: float):
 
 @bot.command(name="demo")
 async def demo_command(ctx: commands.Context):
-    if not can_run_demo(ctx) or not store.is_tracked(ctx.channel.id):
+    if not can_run_demo(ctx):
+        await deny_demo(ctx)
+        return
+    if not store.is_tracked(ctx.channel.id):
         return
     await demo.run(ctx.channel, ctx.author, handle_candidate)
     log.info("demo_seeded channel=%s", ctx.channel.id)

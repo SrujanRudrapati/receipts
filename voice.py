@@ -186,6 +186,10 @@ def tick_bad_text():
     return "give me a number of hours between 0 and 336."
 
 
+def demo_denied_text():
+    return "only demo runners can do this."
+
+
 _DIGITS = re.compile(r"\d+")
 _CAP_WORD = re.compile(r"[A-Za-z][A-Za-z'\-]*")
 

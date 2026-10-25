@@ -43,7 +43,7 @@ def all_outputs(groups):
         voice.awards_text(awards, NAMES), voice.help_text(), voice.on_text(),
         voice.off_text(), voice.forgot_text(3), voice.undo_text(),
         voice.done_text("slides"), voice.not_found_text(), voice.demo_banner(),
-        voice.tick_text(24, "thu 5pm"), voice.tick_bad_text(),
+        voice.tick_text(24, "thu 5pm"), voice.tick_bad_text(), voice.demo_denied_text(),
     ]
 
 
@@ -183,3 +183,7 @@ def test_closer_line_matches_claims():
 
 def test_tick_bad_text():
     assert voice.tick_bad_text() == "give me a number of hours between 0 and 336."
+
+
+def test_demo_denied_text():
+    assert voice.demo_denied_text() == "only demo runners can do this."

@@ -68,7 +68,7 @@ Run it:
 python3 bot.py
 ```
 
-In Discord: `/receipts on` in a channel, then `!demo` to seed a fake group chat. `!demo` and `!tick <hours>` only work for the server owner or anyone with a role called `receipts-demo`.
+In Discord: `/receipts on` in a channel, then `!demo` to seed a fake group chat. `!demo` and `!tick <hours>` only work for the server owner, anyone with a role called `receipts-demo`, or user ids listed in `DEMO_USER_IDS` (comma-separated). Anyone else gets a short "only demo runners can do this." reply.
 
 Tests:
 
@@ -95,8 +95,8 @@ USE_LLM=false pytest
 | `/awards` | this week's awards |
 | `/forgetme` | delete everything the bot has on you |
 | `/help` | short help |
-| `!demo` | seed a fake CSE 511 group chat (owner or demo role) |
-| `!tick <hours>` | move the demo clock forward (owner or demo role) |
+| `!demo` | seed a fake CSE 511 group chat (owner, demo role, or `DEMO_USER_IDS`) |
+| `!tick <hours>` | move the demo clock forward (owner, demo role, or `DEMO_USER_IDS`) |
 
 ## Layout
 

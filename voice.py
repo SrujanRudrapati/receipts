@@ -264,12 +264,20 @@ def demo_denied_text():
     return "only demo runners can do this."
 
 
-# backfill on /receipts on. the proposal says how many, never what.
+# backfill on /receipts on. the proposal lists who said what, then asks. never more than a few lines.
+MAX_BACKFILL_LINES = 5
+_BACKFILL_SHOWN = MAX_BACKFILL_LINES - 2  # one line for the header, one for the question
 
-def backfill_proposal_text(count):
-    if count == 1:
-        return "found 1 promise from this week. keep it?"
-    return f"found {count} promises from this week. keep them?"
+
+def backfill_proposal_text(candidates, names):
+    count = len(candidates)
+    question = "keep it?" if count == 1 else "keep them?"
+    shown = candidates if count <= _BACKFILL_SHOWN else candidates[:_BACKFILL_SHOWN]
+    lines = [f"found {_count(count, 'promise', 'promises')} from this week:"]
+    lines += [f"{_name(names, c['user_id'])}: {c['what']} (due {_date_label(c['due'])})" for c in shown]
+    hidden = count - len(shown)
+    lines.append(f"...and {hidden} more. {question}" if hidden else question)
+    return "\n".join(lines)
 
 
 def backfill_kept_text(count):

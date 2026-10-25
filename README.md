@@ -18,7 +18,7 @@ Built for the Cubbie Hackathon, Track 3: an AI that joins a group chat and makes
 
 ## How it works
 
-- `/receipts on` in a channel turns tracking on. Nothing is read anywhere else. It also looks back through the last 200 messages for promises from this week and asks once, "found N promises from this week. keep them?" with ✅ and ❌. Nothing is stored until ✅. Bots and anyone who ran `/forgetme` are skipped, and no message is proposed twice.
+- `/receipts on` in a channel turns tracking on. Nothing is read anywhere else. It also looks back through the last 200 messages for promises from this week and asks once: "found N promises from this week:", a line per promise with who said it and when it's due (at most 5 lines in all), then "keep them?" with ✅ and ❌. Nothing is stored until ✅. Bots and anyone who ran `/forgetme` are skipped, and no message is proposed twice.
 - Each message goes through a cheap keyword prefilter first ("I'll", "I can", "on it", ...). Most messages stop there and cost nothing.
 - Candidate messages go to `claude-haiku-5-5` with a strict JSON prompt, at most 80 output tokens and 500 characters of input. If the model is off (`USE_LLM=false`), errors, or returns anything that is not the expected JSON, a rule based extractor takes over. The bot works fully without the model.
 - The bot reacts 🧾 to the message. React ❌ or reply "not a promise" to undo. React ✅ or run `/done <what>` when it is finished.
@@ -87,7 +87,7 @@ USE_LLM=false pytest
 
 ## 90-second demo script
 
-1. Backfill. The group has been chatting for a week. `/receipts on`. The bot says "found 3 promises from this week. keep them?" Tap ✅. 🧾 pops on the three old messages and `/receipts board` shows them.
+1. Backfill. The group has been chatting for a week. `/receipts on`. The bot lists them, "found 3 promises from this week:" with a line per person and promise, then "keep them?" Tap ✅. 🧾 pops on the three old messages and `/receipts board` shows them.
 2. Live. Teammates chat naturally: "ok I'll do the intro slides by tomorrow", "I can book a hayden room for sunday". 🧾 pops on each.
 3. 接龙. Bhavana: "who's in for the potluck friday? need 4 people". The bot posts a list with four open slots and a 🙋. Yash: "me". Suraj: "I'll bring chips". Someone taps 🙋. The list fills in as they go, and Suraj's chips get a 🧾 of their own. `/receipts list close` locks it.
 4. `!tick 24`. Yash gets a DM, "intro slides due tomorrow. still on it?", and taps 🆘.

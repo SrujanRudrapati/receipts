@@ -270,7 +270,8 @@ async def propose_backfill(channel, user_id: int) -> None:
     store.set_backfill_mark(channel.id, max(mark, backfill.newest_id(messages)))
     if not candidates:
         return
-    post = await channel.send(voice.backfill_proposal_text(len(candidates)))
+    names = await names_for(c["user_id"] for c in candidates)
+    post = await channel.send(voice.backfill_proposal_text(candidates, names))
     for emoji in (DONE_EMOJI, UNDO_EMOJI):
         await post.add_reaction(emoji)
     _pending_backfill[post.id] = {"user_id": user_id, "channel": channel, "candidates": candidates}

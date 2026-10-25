@@ -97,6 +97,10 @@ def wired(bot_module, monkeypatch):
     relay = FakeRelay()
     monkeypatch.setattr(bot_module, "relay_client", relay)
     bot_module.store.link_cubbie(2, "receipts-topic-of-user-2")
+
+    async def name_of(uid):
+        return {1: "Srujan", 2: "Yash", 3: "Bhavana"}.get(uid, "someone")
+    monkeypatch.setattr(bot_module, "name_of", name_of)
     return relay
 
 
@@ -123,7 +127,10 @@ def test_on_proposes_and_stores_nothing_yet(bot_module, wired, caplog):
         channel, interaction = turn_on(bot_module, messages)
     assert channel.limits == [200]
     assert interaction.calls == [("respond", bot_module.voice.on_text(), {})]
-    assert channel.sent == ["found 2 promises from this week. keep them?"]
+    assert channel.sent == ["found 2 promises from this week:\n"
+                            "Srujan: do the slides (due no date)\n"
+                            "Yash: book the room (due no date)\n"
+                            "keep them?"]
     post = channel.posts[9001]
     assert post.reactions == [bot_module.DONE_EMOJI, bot_module.UNDO_EMOJI]
     assert bot_module.store.all_receipts() == []
@@ -178,7 +185,7 @@ def test_same_message_is_never_proposed_twice(bot_module, wired):
     asyncio.run(bot_module.handle_backfill_reaction(NS(message_id=9001, user_id=1, channel_id=10, guild_id=1),
                                                     bot_module.UNDO_EMOJI))
     channel2, _ = turn_on(bot_module, messages + [history_message(101, "I'll book the room", user_id=2)])
-    assert channel2.sent == ["found 1 promise from this week. keep it?"]
+    assert channel2.sent == ["found 1 promise from this week:\nYash: book the room (due no date)\nkeep it?"]
     assert bot_module._pending_backfill[9001]["candidates"][0]["message_id"] == 101
 
 
@@ -211,9 +218,49 @@ def test_reaction_routing_reaches_backfill(bot_module, wired, monkeypatch):
     assert seen == ["✅"]
 
 
+def _candidate(user_id, what, due=None):
+    return {"user_id": user_id, "what": what, "due": due, "message_id": 1, "message_link": "l", "channel_id": 10}
+
+
+def test_voice_proposal_lists_each_promise_then_asks(now):
+    from voice import backfill_proposal_text
+    names = {1: "Srujan", 2: "Yash"}
+    wed = now.replace(day=28, hour=23, minute=59)
+    assert backfill_proposal_text([_candidate(1, "print the posters", wed)], names) == (
+        "found 1 promise from this week:\nSrujan: print the posters (due wed oct 28)\nkeep it?")
+    assert backfill_proposal_text([_candidate(1, "print the posters", wed), _candidate(2, "book the room")],
+                                  names) == (
+        "found 2 promises from this week:\n"
+        "Srujan: print the posters (due wed oct 28)\n"
+        "Yash: book the room (due no date)\n"
+        "keep them?")
+
+
+def test_voice_proposal_never_exceeds_five_lines(now):
+    from voice import MAX_BACKFILL_LINES, backfill_proposal_text
+    names = {1: "Srujan"}
+    candidates = [_candidate(1, f"task {i}") for i in range(6)]
+    text = backfill_proposal_text(candidates, names)
+    assert text == ("found 6 promises from this week:\n"
+                    "Srujan: task 0 (due no date)\n"
+                    "Srujan: task 1 (due no date)\n"
+                    "Srujan: task 2 (due no date)\n"
+                    "...and 3 more. keep them?")
+    assert len(text.split("\n")) == MAX_BACKFILL_LINES
+    assert "task 3" not in text
+    # exactly as many as fit still lists them all
+    full = backfill_proposal_text(candidates[:3], names)
+    assert "task 2" in full and "more" not in full and full.endswith("\nkeep them?")
+
+
+def test_voice_proposal_uses_fallback_name_and_no_at_signs(now):
+    from voice import backfill_proposal_text
+    text = backfill_proposal_text([_candidate(9, "bring snacks")], {})
+    assert text == "found 1 promise from this week:\nsomeone: bring snacks (due no date)\nkeep it?"
+    assert "@" not in text
+
+
 def test_voice_counts():
-    from voice import backfill_dropped_text, backfill_kept_text, backfill_proposal_text
-    assert backfill_proposal_text(1) == "found 1 promise from this week. keep it?"
-    assert backfill_proposal_text(3) == "found 3 promises from this week. keep them?"
+    from voice import backfill_dropped_text, backfill_kept_text
     assert backfill_kept_text(1) == "kept 1 receipt."
     assert backfill_dropped_text() == "ok, dropped them. nothing stored."

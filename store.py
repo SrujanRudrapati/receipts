@@ -3,8 +3,8 @@ import json
 import os
 import re
 import uuid
-from dataclasses import asdict, dataclass
-from datetime import datetime
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 
 MAX_WHAT = 140
@@ -32,6 +32,8 @@ class Receipt:
     previous_user_id: int | None = None
     claimed_by: int | None = None
     claimed_at: datetime | None = None
+    # set when the promise came from a sign-up list (接龙), so the board can say so.
+    list_id: str | None = None
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -49,6 +51,32 @@ class Receipt:
         return cls(**data)
 
 
+@dataclass
+class SignupList:
+    """one 接龙 sign-up list: a title, optional slot count, and who joined with what."""
+    id: str
+    channel_id: int
+    title: str
+    slots: int | None
+    starter_message_id: int
+    post_message_id: int
+    author_id: int
+    created_at: datetime
+    status: str = "open"
+    entries: list = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        data = asdict(self)
+        data["created_at"] = self.created_at.isoformat()
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "SignupList":
+        data = dict(data)
+        data["created_at"] = datetime.fromisoformat(data["created_at"])
+        return cls(**data)
+
+
 def words(text: str) -> set[str]:
     found = re.split(r"[^a-z]+", text.lower())
     return {w for w in found if len(w) >= MIN_WORD and w not in STOPWORDS}
@@ -63,6 +91,7 @@ class Store:
         self._offset = 0
         self._awards_week: str | None = None
         self._cubbie: dict[int, str] = {}
+        self._lists: dict[str, SignupList] = {}
         self._load()
 
     def _load(self) -> None:
@@ -77,6 +106,9 @@ class Store:
         self._offset = data.get("clock_offset_seconds", 0)
         self._awards_week = data.get("last_awards_week")
         self._cubbie = {int(k): v for k, v in data.get("cubbie_topics", {}).items()}
+        for raw in data.get("lists", []):
+            lst = SignupList.from_dict(raw)
+            self._lists[lst.id] = lst
 
     def save(self) -> None:
         data = {
@@ -86,6 +118,7 @@ class Store:
             "clock_offset_seconds": self._offset,
             "last_awards_week": self._awards_week,
             "cubbie_topics": {str(k): v for k, v in self._cubbie.items()},
+            "lists": [lst.to_dict() for lst in self._lists.values()],
         }
         tmp = self.path.with_name(self.path.name + ".tmp")
         with open(tmp, "w") as f:
@@ -97,7 +130,8 @@ class Store:
 
     # receipts
 
-    def add(self, user_id, what, due, channel_id, message_id, message_link, now) -> Receipt:
+    def add(self, user_id, what, due, channel_id, message_id, message_link, now,
+            list_id: str | None = None) -> Receipt:
         r = Receipt(
             id=uuid.uuid4().hex[:8],
             user_id=user_id,
@@ -108,6 +142,7 @@ class Store:
             message_id=message_id,
             message_link=message_link,
             created_at=now,
+            list_id=list_id,
         )
         self._receipts[r.id] = r
         self.save()
@@ -197,6 +232,83 @@ class Store:
         found = self._matches(mine, query)
         return found[0] if found else None
 
+    # sign-up lists (接龙)
+
+    def add_list(self, channel_id, title, slots, starter_message_id, post_message_id,
+                 author_id, now) -> SignupList:
+        lst = SignupList(
+            id=uuid.uuid4().hex[:8],
+            channel_id=channel_id,
+            title=title[:MAX_WHAT],
+            slots=slots,
+            starter_message_id=starter_message_id,
+            post_message_id=post_message_id,
+            author_id=author_id,
+            created_at=now,
+        )
+        self._lists[lst.id] = lst
+        self.save()
+        return lst
+
+    def get_list(self, list_id: str) -> SignupList | None:
+        return self._lists.get(list_id)
+
+    def find_list_by_starter(self, message_id: int) -> SignupList | None:
+        return next((l for l in self._lists.values() if l.starter_message_id == message_id), None)
+
+    def find_list_by_post(self, message_id: int) -> SignupList | None:
+        return next((l for l in self._lists.values() if l.post_message_id == message_id), None)
+
+    def lists_in_channel(self, channel_id: int) -> list[SignupList]:
+        found = [l for l in self._lists.values() if l.channel_id == channel_id]
+        return sorted(found, key=lambda l: l.created_at, reverse=True)
+
+    def open_list_in_channel(self, channel_id: int, now, window: timedelta) -> SignupList | None:
+        """the newest open list in the channel that started within the window, if any."""
+        for lst in self.lists_in_channel(channel_id):
+            if lst.status == "open" and now - lst.created_at <= window:
+                return lst
+        return None
+
+    def list_is_full(self, list_id: str) -> bool:
+        lst = self.get_list(list_id)
+        return lst is not None and lst.slots is not None and len(lst.entries) >= lst.slots
+
+    def add_entry(self, list_id: str, user_id: int, item: str | None) -> dict | None:
+        """join a list. a repeat join only counts when it adds an item to an entry without one."""
+        lst = self.get_list(list_id)
+        if lst is None or lst.status != "open":
+            return None
+        mine = next((e for e in lst.entries if e["user_id"] == user_id), None)
+        if mine is not None:
+            if item is None or mine["item"] is not None:
+                return None
+            entry = {**mine, "item": item[:MAX_WHAT]}
+            lst.entries = [entry if e is mine else e for e in lst.entries]
+        elif self.list_is_full(list_id):
+            return None
+        else:
+            entry = {"user_id": user_id, "item": item[:MAX_WHAT] if item else None, "receipt_id": None}
+            lst.entries = [*lst.entries, entry]
+        self.save()
+        return entry
+
+    def set_entry_receipt(self, list_id: str, user_id: int, receipt_id: str) -> None:
+        lst = self.get_list(list_id)
+        if lst is None:
+            return
+        lst.entries = [{**e, "receipt_id": receipt_id} if e["user_id"] == user_id else e
+                       for e in lst.entries]
+        self.save()
+
+    def close_list(self, list_id: str) -> SignupList | None:
+        lst = self.get_list(list_id)
+        if lst is None:
+            return None
+        lst.status = "closed"
+        self.save()
+        return lst
+
     # privacy
 
     def forget(self, user_id) -> int:
@@ -208,6 +320,9 @@ class Store:
             del self._receipts[rid]
         self._links = {m: v for m, v in self._links.items() if v[1] not in gone}
         self._cubbie.pop(user_id, None)
+        self._lists = {lid: l for lid, l in self._lists.items() if l.author_id != user_id}
+        for lst in self._lists.values():
+            lst.entries = [e for e in lst.entries if e["user_id"] != user_id]
         self.save()
         return len(gone)
 

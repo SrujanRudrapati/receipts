@@ -171,7 +171,7 @@ def demo_banner():
 
 
 def tick_text(hours, when):
-    return f"checking in every {_count(hours, 'hour', 'hours')}. next one {when}."
+    return f"moved the clock {_count(hours, 'hour', 'hours')} ahead. pretending it is {when} now."
 
 
 _DIGITS = re.compile(r"\d+")

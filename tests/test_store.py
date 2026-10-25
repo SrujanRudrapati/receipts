@@ -206,3 +206,38 @@ def test_save_fsyncs_before_replace(tmp_path, now, monkeypatch):
     make(s, now)
     assert calls == ["fsync", "replace"]
     assert Store(tmp_path / "state.json").all_receipts()
+
+
+# cubbie link topics
+
+
+def test_cubbie_topic_link_and_unlink(tmp_store):
+    assert tmp_store.cubbie_topic(1) is None
+    tmp_store.link_cubbie(1, "receipts-abcdefghijklmnop")
+    assert tmp_store.cubbie_topic(1) == "receipts-abcdefghijklmnop"
+    assert tmp_store.cubbie_links() == {1: "receipts-abcdefghijklmnop"}
+    assert tmp_store.unlink_cubbie(1) is True
+    assert tmp_store.unlink_cubbie(1) is False
+    assert tmp_store.cubbie_topic(1) is None
+    assert tmp_store.cubbie_links() == {}
+
+
+def test_cubbie_topic_survives_reload(tmp_store):
+    tmp_store.link_cubbie(1, "receipts-abcdefghijklmnop")
+    again = Store(tmp_store.path)
+    assert again.cubbie_topic(1) == "receipts-abcdefghijklmnop"
+    assert again.cubbie_links() == {1: "receipts-abcdefghijklmnop"}
+
+
+def test_cubbie_link_replaces_old_topic(tmp_store):
+    tmp_store.link_cubbie(1, "receipts-old")
+    tmp_store.link_cubbie(1, "receipts-new")
+    assert tmp_store.cubbie_topic(1) == "receipts-new"
+
+
+def test_forget_drops_cubbie_topic(tmp_store, now):
+    tmp_store.link_cubbie(5, "receipts-abcdefghijklmnop")
+    tmp_store.link_cubbie(6, "receipts-someoneelse")
+    tmp_store.forget(5)
+    assert tmp_store.cubbie_topic(5) is None
+    assert tmp_store.cubbie_topic(6) == "receipts-someoneelse"

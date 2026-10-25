@@ -62,6 +62,7 @@ class Store:
         self._links: dict[int, tuple[str, str]] = {}
         self._offset = 0
         self._awards_week: str | None = None
+        self._cubbie: dict[int, str] = {}
         self._load()
 
     def _load(self) -> None:
@@ -75,6 +76,7 @@ class Store:
         self._links = {int(k): tuple(v) for k, v in data.get("links", {}).items()}
         self._offset = data.get("clock_offset_seconds", 0)
         self._awards_week = data.get("last_awards_week")
+        self._cubbie = {int(k): v for k, v in data.get("cubbie_topics", {}).items()}
 
     def save(self) -> None:
         data = {
@@ -83,6 +85,7 @@ class Store:
             "links": {str(k): list(v) for k, v in self._links.items()},
             "clock_offset_seconds": self._offset,
             "last_awards_week": self._awards_week,
+            "cubbie_topics": {str(k): v for k, v in self._cubbie.items()},
         }
         tmp = self.path.with_name(self.path.name + ".tmp")
         with open(tmp, "w") as f:
@@ -204,6 +207,7 @@ class Store:
         for rid in gone:
             del self._receipts[rid]
         self._links = {m: v for m, v in self._links.items() if v[1] not in gone}
+        self._cubbie.pop(user_id, None)
         self.save()
         return len(gone)
 
@@ -232,6 +236,24 @@ class Store:
     def unlink_message(self, message_id: int) -> None:
         if self._links.pop(message_id, None) is not None:
             self.save()
+
+    # cubbie link. the topic works like a password, so it is never logged.
+
+    def link_cubbie(self, user_id: int, topic: str) -> None:
+        self._cubbie[user_id] = topic
+        self.save()
+
+    def unlink_cubbie(self, user_id: int) -> bool:
+        if self._cubbie.pop(user_id, None) is None:
+            return False
+        self.save()
+        return True
+
+    def cubbie_topic(self, user_id: int) -> str | None:
+        return self._cubbie.get(user_id)
+
+    def cubbie_links(self) -> dict[int, str]:
+        return dict(self._cubbie)
 
     # settings
 

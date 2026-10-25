@@ -24,6 +24,28 @@ def got_it():
     return "got it."
 
 
+# ding. the dm asks once more. the channel only ever sees the bell.
+
+def ding_dm(what, when_label):
+    return f"last call: {what} due {when_label}. still on it?"
+
+
+def reminded_text():
+    return "🔔 reminded"
+
+
+def ding_on_text():
+    return "ok, ding is on. if you go quiet before something is due, cubbie hears about it."
+
+
+def ding_off_text():
+    return "ok, ding is off."
+
+
+def ding_needs_link_text():
+    return "link cubbie first with /receipts link."
+
+
 def help_wanted(name, what):
     return f"{name} could use a hand with {what}. anyone?"
 
@@ -193,6 +215,7 @@ def help_text():
         "`/forgetme` wipes everything i have on you.",
         "`/receipts off` turns me off in a channel.",
         "`/receipts link` connects cubbie, so it hears about your receipts. `/receipts unlink` stops that.",
+        "`/receipts ding on` lets cubbie hear when you go quiet right before something is due. off by default.",
     ])
 
 

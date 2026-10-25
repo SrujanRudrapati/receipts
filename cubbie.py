@@ -33,6 +33,12 @@ def receipt_line(receipt, channel_name: str) -> str:
     return f"receipt id={receipt.id} what={_one_line(receipt.what)} due={due} channel={channel}"
 
 
+def ding_line(receipt) -> str:
+    """the escalation line. a summary and a time, never a reason."""
+    due = receipt.due.isoformat() if receipt.due is not None else "none"
+    return f"ding id={receipt.id} what={_one_line(receipt.what)} due={due}"
+
+
 def update_line(receipt_id: str, event: str) -> str:
     if event not in EVENTS:
         raise ValueError(f"unknown cubbie event: {event}")

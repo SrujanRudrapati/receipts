@@ -3,7 +3,7 @@ import json
 import os
 import re
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -13,7 +13,7 @@ STOPWORDS = {
     "the", "and", "for", "with", "that", "this", "who",
     "said", "they", "would", "doing", "going", "gonna",
 }
-DATE_FIELDS = ("due", "created_at", "done_at", "claimed_at")
+DATE_FIELDS = ("due", "created_at", "done_at", "claimed_at", "ding_sent_at")
 
 
 @dataclass
@@ -34,6 +34,10 @@ class Receipt:
     claimed_at: datetime | None = None
     # set when the promise came from a sign-up list (接龙), so the board can say so.
     list_id: str | None = None
+    # ding: ✅ on any nudge sets acked. the last-call dm sets ding_sent_at. the cubbie ding sets dinged.
+    acked: bool = False
+    ding_sent_at: datetime | None = None
+    dinged: bool = False
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -94,6 +98,7 @@ class Store:
         self._lists: dict[str, SignupList] = {}
         self._opted_out: set[int] = set()
         self._backfill_marks: dict[int, int] = {}
+        self._ding: set[int] = set()
         self._load()
 
     def _load(self) -> None:
@@ -113,6 +118,7 @@ class Store:
             self._lists[lst.id] = lst
         self._opted_out = set(data.get("opted_out", []))
         self._backfill_marks = {int(k): v for k, v in data.get("backfill_marks", {}).items()}
+        self._ding = set(data.get("ding_users", []))
 
     def save(self) -> None:
         data = {
@@ -125,6 +131,7 @@ class Store:
             "lists": [lst.to_dict() for lst in self._lists.values()],
             "opted_out": sorted(self._opted_out),
             "backfill_marks": {str(k): v for k, v in self._backfill_marks.items()},
+            "ding_users": sorted(self._ding),
         }
         tmp = self.path.with_name(self.path.name + ".tmp")
         with open(tmp, "w") as f:
@@ -193,10 +200,23 @@ class Store:
         return r
 
     def mark_nudged(self, receipt_id) -> None:
+        self._set(receipt_id, nudged=True)
+
+    def mark_acked(self, receipt_id) -> None:
+        self._set(receipt_id, acked=True)
+
+    def mark_ding_sent(self, receipt_id, now) -> None:
+        self._set(receipt_id, ding_sent_at=now)
+
+    def mark_dinged(self, receipt_id) -> None:
+        self._set(receipt_id, dinged=True)
+
+    def _set(self, receipt_id, **fields) -> None:
         r = self.get(receipt_id)
-        if r is not None:
-            r.nudged = True
-            self.save()
+        if r is None:
+            return
+        self._receipts[receipt_id] = replace(r, **fields)
+        self.save()
 
     # views
 
@@ -326,6 +346,7 @@ class Store:
             del self._receipts[rid]
         self._links = {m: v for m, v in self._links.items() if v[1] not in gone}
         self._cubbie.pop(user_id, None)
+        self._ding.discard(user_id)
         self._lists = {lid: l for lid, l in self._lists.items() if l.author_id != user_id}
         for lst in self._lists.values():
             lst.entries = [e for e in lst.entries if e["user_id"] != user_id]
@@ -396,6 +417,18 @@ class Store:
 
     def cubbie_links(self) -> dict[int, str]:
         return dict(self._cubbie)
+
+    # ding. off unless the user turned it on, and only linked users can.
+
+    def set_ding(self, user_id: int, on: bool) -> None:
+        if on:
+            self._ding.add(user_id)
+        else:
+            self._ding.discard(user_id)
+        self.save()
+
+    def ding_on(self, user_id: int) -> bool:
+        return user_id in self._ding
 
     # settings
 

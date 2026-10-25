@@ -29,10 +29,12 @@ MAX_RECEIPTS = 200
 KEEP_CLOSED_SECONDS = 7 * 24 * 3600
 TOKEN_ERRORS = (401, 403, 404)
 
-# the two line shapes the receipts bot posts. anything else on the topic is ignored.
+# the three line shapes the receipts bot posts. anything else on the topic is ignored.
 # everything on the topic is untrusted: anyone who knows the topic can write to it.
 CAUGHT = re.compile(r"^receipt id=([0-9a-f]{8}) what=(.*) due=(\S+) channel=(\S+)$")
 EVENT = re.compile(r"^receipt id=([0-9a-f]{8}) event=(done|reassigned|removed)$")
+# a ding: the bot sent its last call two hours before due and heard nothing for thirty minutes.
+DING = re.compile(r"^ding id=([0-9a-f]{8}) what=(.*) due=(\S+)$")
 UNPRINTABLE = re.compile(r"[^\x20-\x7e]")
 
 EXIT_OK, EXIT_ARGS, EXIT_NO_TOKEN, EXIT_UNREACHABLE, EXIT_REJECTED, EXIT_NTFY = 0, 2, 3, 4, 5, 6
@@ -120,6 +122,12 @@ def parse_line(text: str) -> dict | None:
     match = EVENT.match(text or "")
     if match:
         return {"kind": match.group(2), "id": match.group(1)}
+    match = DING.match(text or "")
+    if match:
+        receipt_id, what, due = match.groups()
+        due_at = None if due == "none" else _aware(due)
+        return {"kind": "ding", "id": receipt_id, "what": _clean(what, MAX_WHAT),
+                "due": due_at.isoformat() if due_at else None}
     return None
 
 
@@ -149,9 +157,23 @@ def apply_messages(state: dict, messages: list[dict], now_ts: float | None = Non
                 "sos_sent": current.get("sos_sent") if current else None,
                 "first_seen": current.get("first_seen") if current else stamp,
             }
+        elif line["kind"] == "ding":
+            dinged = _with_ding(current, line, stamp)
+            if dinged is not None:
+                receipts[line["id"]] = dinged
         elif current is not None:
             receipts[line["id"]] = {**current, "status": line["kind"], "closed_at": stamp}
     return {**state, "receipts": _prune(receipts, now_ts)}
+
+
+def _with_ding(current: dict | None, line: dict, stamp: int) -> dict | None:
+    """a ding on an open receipt flags it for cubbie. an unknown one is opened from the ding itself."""
+    if current is None:
+        current = {"what": line["what"], "due": line["due"], "channel": "", "status": "open",
+                   "offered": True, "sos_sent": None, "first_seen": stamp}
+    if current.get("status") != "open":
+        return None
+    return {**current, "ding_at": stamp, "ding_handled": False}
 
 
 def open_receipts(state: dict) -> list[dict]:

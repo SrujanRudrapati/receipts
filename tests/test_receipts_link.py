@@ -494,3 +494,76 @@ def test_save_state_is_atomic_and_private(link, home):
     assert path.exists()
     assert (path.stat().st_mode & 0o777) == 0o600
     assert [p.name for p in path.parent.iterdir()] == ["state.json"]
+
+
+# ---- ding: the bot heard nothing after its last call, so cubbie steps in
+
+
+def ding(receipt_id, what="intro slides", due="2026-10-29T17:00:00-07:00", at=NOW, message_id=None):
+    return {"id": message_id or f"m-{receipt_id}-ding", "time": at, "event": "message",
+            "message": f"ding id={receipt_id} what={what} due={due}"}
+
+
+def test_parse_ding_line(link):
+    got = link.parse_line("ding id=ab12cd34 what=intro slides due=2026-10-29T17:00:00-07:00")
+    assert got == {"kind": "ding", "id": "ab12cd34", "what": "intro slides", "due": "2026-10-29T17:00:00-07:00"}
+    assert link.parse_line("ding id=ab12cd34 what=x due=none")["due"] is None
+    assert link.parse_line("ding id=zz12cd34 what=x due=none") is None
+
+
+def test_apply_ding_flags_a_known_receipt(link):
+    state = link.apply_messages({"receipts": {}}, [caught("ab12cd34", "intro slides", at=NOW - 60), ding("ab12cd34")])
+    r = state["receipts"]["ab12cd34"]
+    assert r["status"] == "open" and r["ding_at"] == NOW and r["ding_handled"] is False
+
+
+def test_apply_ding_for_an_unknown_receipt_opens_it(link):
+    state = link.apply_messages({"receipts": {}}, [ding("ab12cd34", what="book a room", due="none")])
+    r = state["receipts"]["ab12cd34"]
+    assert r["status"] == "open" and r["what"] == "book a room" and r["due"] is None
+    assert r["ding_at"] == NOW and r["ding_handled"] is False
+
+
+def test_apply_ding_ignores_closed_receipts(link):
+    polled = [caught("ab12cd34", "x", at=NOW - 60), event("ab12cd34", "done", at=NOW - 30), ding("ab12cd34")]
+    r = link.apply_messages({"receipts": {}}, polled)["receipts"]["ab12cd34"]
+    assert r["status"] == "done" and "ding_at" not in r
+
+
+def test_pull_prints_ding_lines_and_dinged_marks_them_handled(pull, link, home, token, monkeypatch, capsys):
+    body = ndjson(caught("ab12cd34", "intro slides", due="2026-10-29T17:00:00-07:00", at=NOW - 60),
+                  caught("9f8e7d6c", "book a room", at=NOW - 50), ding("ab12cd34"))
+    fake_urlopen(link, monkeypatch, body=body)
+    code, out, err = run(pull, ["--now", "2026-10-29T15:30:00-07:00"], capsys)
+    assert code == 0, err
+    lines = out.splitlines()
+    assert lines[0] == "open 2"
+    assert lines[1] == "ding ab12cd34 | intro slides | due today (2026-10-29T17:00:00-07:00) | #cse511"
+    assert lines[2].startswith("new 9f8e7d6c")
+    code, out, _ = run(pull, ["--dinged", "ab12cd34"], capsys)
+    assert code == 0 and "marked ab12cd34 as handled" in out
+    fake_urlopen(link, monkeypatch, body="")
+    code, out, _ = run(pull, ["--now", "2026-10-29T15:30:00-07:00"], capsys)
+    assert out.splitlines()[1].startswith("new ab12cd34")
+
+
+def test_pull_dinged_unknown_id_exits_2(pull, home, token, capsys):
+    code, out, err = run(pull, ["--dinged", "deadbeef"], capsys)
+    assert code == 2 and "deadbeef" in err
+
+
+def test_sample_has_a_ding(pull, home, monkeypatch, capsys):
+    monkeypatch.delenv("RECEIPTS_LINK_TOKEN", raising=False)
+    code, out, err = run(pull, ["--sample", "--now", "2026-10-29T15:30:00-07:00"], capsys)
+    assert code == 0, err
+    assert any(line.startswith("ding ") for line in out.splitlines())
+
+
+def test_skill_md_covers_the_ding():
+    head, text = frontmatter()
+    assert "## Flow 4: a ding" in text
+    assert "ding" in re.search(r"^description: (.+)$", head, re.M).group(1)
+    assert "30-minute" in text or "30 minute" in text
+    assert "--dinged <id>" in text
+    assert "only after the student says yes" in text or "Ask before" in text
+    assert "phone" in text.lower()

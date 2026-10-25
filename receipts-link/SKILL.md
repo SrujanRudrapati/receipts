@@ -132,7 +132,11 @@ When the student says they can't do a task or needs help with one:
    ```
 
    The script posts exactly `sos id=<id> source=cubbie`. The Receipts bot then posts in the group channel: "<name> could use a hand with <what>. anyone?" and the first person to react takes it over. Both people get a DM from the bot. If the group was already asked, the script says so and stops. Only add `--again` when the student clearly wants to ask a second time.
-5. Tell the student it is sent and what happens next.
+5. Tell the student it is sent and what happens next. Then offer, in these words: "want me to check back in 10 minutes and tell you who took it?"
+6. On yes, create a one-time check-in for 10 minutes from now, worded so it makes sense on its own: "receipts-link: run scripts/pull.py and tell the student whether <what> was taken." When it fires, run flow 1 step 1 and answer from that output only:
+   - The receipt is in the `changed` block as `reassigned`, or is no longer in the open list: "someone picked up <what>, it's off your plate." The line does not carry a name, so do not guess one.
+   - The receipt is still open with `help asked`: "no one yet on <what>. want me to ask again in an hour?" Create another one-time check-in only if they say yes.
+   One check-back per help request unless the student asks for another.
 
 Never send a reason, a course name, a grade or anything the student said about why. The script cannot carry any of it, and Cubbie must not put it anywhere else either, like a group message or a calendar note.
 
@@ -182,7 +186,11 @@ want me to ask the group for a hand? I'll only say you need help, not why.
 ```
 
 ```
-sent. the bot will ask your group, and whoever reacts first picks it up. I'll tell you if that happens.
+sent. the bot will ask your group, and whoever reacts first picks it up. want me to check back in 10 minutes and tell you who took it?
+```
+
+```
+someone picked up send the outline, it's off your plate.
 ```
 
 ```

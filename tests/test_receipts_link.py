@@ -627,3 +627,12 @@ def test_skill_md_ding_text_offers_a_slot_and_the_help_word():
     assert "only if" in flow and "opted into calls" in flow
     assert "Google Calendar" in flow and "30-minute" in flow
     assert "only after the student says yes" in flow
+
+
+def test_skill_md_offers_a_check_back_after_a_help_request():
+    """after the sos goes out, offer one 10-minute check-back. on yes, a one-time check-in runs pull.py and says who took it."""
+    head, text = frontmatter()
+    flow = text.split("## Flow 3: the student can't do it", 1)[1].split("## Flow 4", 1)[0]
+    assert "want me to check back in 10 minutes and tell you who took it?" in flow
+    assert "one-time" in flow and "scripts/pull.py" in flow
+    assert "off your plate" in flow and "no one yet" in flow

@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import discord
@@ -17,10 +17,12 @@ import awards
 import cubbie
 import demo
 import detect
+import lists
 import nudges
 import relay
 import voice
 from store import Store
+from store import words as store_words
 
 load_dotenv()
 
@@ -48,6 +50,9 @@ UNDO_EMOJI = "❌"
 HELP_EMOJI = "🆘"
 CLAIM_EMOJI = "🙋"
 ACK_EMOJI = "👍"
+# a plain "me" counts as joining a list for this long after it started. replies always count.
+LIST_WINDOW = timedelta(minutes=30)
+MAX_BOARD_LISTS = 5
 
 # logs hold ids and event names only. never message text.
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -246,6 +251,88 @@ async def handle_who(message: discord.Message) -> bool:
     return True
 
 
+# ---- sign-up lists (接龙) ----
+
+async def refresh_list_post(lst) -> None:
+    """edit the one list message in place. a missing or locked post is logged by error type only."""
+    try:
+        channel = await get_channel(lst.channel_id)
+        post = await channel.fetch_message(lst.post_message_id)
+        names = await names_for(e["user_id"] for e in lst.entries)
+        await post.edit(content=voice.list_text(lst.title, lst.entries, lst.slots, names,
+                                                closed=lst.status != "open"))
+    except discord.HTTPException as error:
+        log.info("list_edit_failed list=%s error=%s", lst.id, type(error).__name__)
+
+
+async def handle_list_starter(message: discord.Message, text: str, author_id: int) -> bool:
+    """'who's in for ...' and friends start a list. returns True if handled."""
+    found = await asyncio.to_thread(lists.extract_starter, text, author_id, now())
+    if found is None:
+        return False
+    post = await message.channel.send(voice.list_text(found["title"], [], found["slots"], {}, closed=False))
+    await post.add_reaction(CLAIM_EMOJI)
+    lst = store.add_list(message.channel.id, found["title"], found["slots"], message.id, post.id,
+                         author_id, now())
+    store.link_message(post.id, "list", lst.id)
+    log.info("list_started list=%s channel=%s", lst.id, message.channel.id)
+    return True
+
+
+def list_for_reply(message: discord.Message):
+    """the list a message is about: the one it replies to, else the newest open one started recently."""
+    if message.reference is not None:
+        target = message.reference.message_id
+        return store.find_list_by_starter(target) or store.find_list_by_post(target)
+    return store.open_list_in_channel(message.channel.id, now(), LIST_WINDOW)
+
+
+async def handle_list_join(message: discord.Message, text: str, author_id: int) -> bool:
+    """'me', '+1', 'i'll bring chips' on an open list. returns True if handled."""
+    lst = list_for_reply(message)
+    if lst is None or lst.status != "open":
+        return False
+    found = lists.join(text, now())
+    if found is None:
+        return False
+    already_in = any(e["user_id"] == author_id for e in lst.entries)
+    if store.list_is_full(lst.id) and not already_in:
+        await message.reply(voice.list_full_text(lst.title))
+        return True
+    entry = store.add_entry(lst.id, author_id, found["item"])
+    if entry is None:
+        return True
+    if found["item"] or found["due"]:
+        receipt = store.add(author_id, found["item"] or lst.title, found["due"], message.channel.id,
+                            message.id, message.jump_url, now(), list_id=lst.id)
+        store.set_entry_receipt(lst.id, author_id, receipt.id)
+        await message.add_reaction(RECEIPT_EMOJI)
+        log.info("promise_caught channel=%s message=%s user=%s list=%s",
+                 message.channel.id, message.id, author_id, lst.id)
+        await cubbie_caught(receipt, message.channel)
+    log.info("list_joined list=%s user=%s", lst.id, author_id)
+    await refresh_list_post(store.get_list(lst.id))
+    return True
+
+
+async def handle_list_reaction(payload, list_id: str) -> None:
+    """🙋 on the list post joins it. repeats and full or closed lists change nothing."""
+    entry = store.add_entry(list_id, payload.user_id, None)
+    if entry is None:
+        return
+    log.info("list_joined list=%s user=%s", list_id, payload.user_id)
+    await refresh_list_post(store.get_list(list_id))
+
+
+async def handle_chat(message: discord.Message, text: str, author_id: int) -> None:
+    """one normal chat line: a list starter, a list join, or maybe a promise."""
+    if await handle_list_starter(message, text, author_id):
+        return
+    if await handle_list_join(message, text, author_id):
+        return
+    await handle_candidate(message, text, author_id)
+
+
 async def clear_receipt_reaction(channel, message_id: int) -> None:
     try:
         original = await channel.fetch_message(message_id)
@@ -267,7 +354,7 @@ async def on_message(message: discord.Message):
         return
     if await handle_who(message):
         return
-    await handle_candidate(message, message.content, message.author.id)
+    await handle_chat(message, message.content, message.author.id)
 
 
 # ---- reactions ----
@@ -283,6 +370,9 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     link = store.lookup_message(payload.message_id)
     if link is not None and link[0] == "help" and emoji == CLAIM_EMOJI:
         await handle_claim(payload, link[1])
+        return
+    if link is not None and link[0] == "list" and emoji == CLAIM_EMOJI:
+        await handle_list_reaction(payload, link[1])
         return
     receipt = store.find_by_message(payload.message_id)
     if receipt is None or receipt.user_id != payload.user_id:
@@ -469,7 +559,7 @@ async def demo_command(ctx: commands.Context):
         return
     if not store.is_tracked(ctx.channel.id):
         return
-    await demo.run(ctx.channel, ctx.author, handle_candidate)
+    await demo.run(ctx.channel, ctx.author, handle_chat)
     log.info("demo_seeded channel=%s", ctx.channel.id)
 
 
@@ -525,10 +615,36 @@ async def receipts_board(interaction: discord.Interaction):
     await interaction.response.defer()
     groups = store.board(interaction.channel_id, now())
     names = await names_for(groups.keys())
-    await interaction.followup.send(voice.board_text(groups, names, include_overdue=False))
+    channel_lists = store.lists_in_channel(interaction.channel_id)[:MAX_BOARD_LISTS]
+    await interaction.followup.send(voice.board_text(groups, names, include_overdue=False, lists=channel_lists))
     # overdue only goes to the person who asked, and only their own items.
     mine = {uid: buckets for uid, buckets in groups.items() if uid == interaction.user.id}
     await interaction.followup.send(voice.overdue_text(mine, names), ephemeral=True)
+
+
+list_group = app_commands.Group(name="list", description="sign-up lists (接龙)", parent=receipts_group)
+
+
+def open_list_to_close(channel_id: int, what: str | None):
+    """the newest open list in the channel, or the open one whose title matches a few words."""
+    open_lists = [l for l in store.lists_in_channel(channel_id) if l.status == "open"]
+    if what:
+        wanted = store_words(what)
+        open_lists = [l for l in open_lists if wanted & store_words(l.title)]
+    return open_lists[0] if open_lists else None
+
+
+@list_group.command(name="close", description="lock a sign-up list")
+@app_commands.describe(what="a few words from the list title. leave it out for the newest one")
+async def list_close(interaction: discord.Interaction, what: str | None = None):
+    lst = open_list_to_close(interaction.channel_id, what)
+    if lst is None:
+        await interaction.response.send_message(voice.list_none_text(), ephemeral=True)
+        return
+    store.close_list(lst.id)
+    await interaction.response.send_message(voice.list_closed_text(lst.title, len(lst.entries)))
+    log.info("list_closed list=%s", lst.id)
+    await refresh_list_post(lst)
 
 
 @bot.tree.command(name="done", description="mark one of your promises done")

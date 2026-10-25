@@ -20,6 +20,9 @@ DEMO_LINES = [
     (9000000000000003, "I got snacks"),
     (9000000000000001, "lol i got nothing for related work yet"),
     (9000000000000002, "ill write the related work section by friday"),
+    (9000000000000003, "who's in for the potluck friday? need 4 people"),
+    (9000000000000001, "me"),
+    (9000000000000002, "I'll bring chips"),
 ]
 
 
@@ -29,12 +32,12 @@ def name_for(persona_id, invoker_id, invoker_name):
     return DEMO_PEOPLE.get(persona_id, "someone")
 
 
-async def run(channel, invoker, handle_candidate):
+async def run(channel, invoker, handle_chat):
     """Post the demo lines through the bot and run the detector on each one.
 
     channel: the discord channel to post in
     invoker: the discord user who ran !demo
-    handle_candidate: async (message, text, author_id) -> None, from bot.py
+    handle_chat: async (message, text, author_id) -> None, from bot.py. lists and promises.
     """
     invoker_name = invoker.display_name
     await channel.send(voice.demo_banner())
@@ -42,4 +45,4 @@ async def run(channel, invoker, handle_candidate):
         author_id = invoker.id if persona_id == INVOKER else persona_id
         name = name_for(persona_id, invoker.id, invoker_name)
         sent = await channel.send(f"[demo] {name}: {text}")
-        await handle_candidate(sent, text, author_id)
+        await handle_chat(sent, text, author_id)

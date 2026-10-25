@@ -362,3 +362,68 @@ def test_help_request_posts_when_channel_on(bot_module, monkeypatch):
     asyncio.run(bot_module.handle_dm_reaction(NS(message_id=700, user_id=1), bot_module.HELP_EMOJI))
     assert posted == ["Yash could use a hand with slides. anyone?"]
     assert bot_module.store.lookup_message(801) == ("help", r.id)
+
+
+# cubbie link commands
+
+
+def test_no_log_call_uses_a_topic():
+    source = (Path(__file__).parent.parent / "bot.py").read_text()
+    assert _log_calls_using(source, "topic") == []
+
+
+def test_link_dms_the_token_and_stores_it(bot_module, monkeypatch, caplog):
+    sent = []
+    monkeypatch.setattr(bot_module, "dm", fake_dm(sent))
+    interaction = FakeInteraction(1, 10)
+    with caplog.at_level(logging.INFO):
+        asyncio.run(bot_module.receipts_link.callback(interaction))
+    assert len(sent) == 1 and sent[0][0] == 1
+    topic = sent[0][1].splitlines()[-1]
+    assert topic.startswith("receipts-") and len(topic) == len("receipts-") + 16
+    assert bot_module.store.cubbie_topic(1) == topic
+    kind, text, kwargs = interaction.calls[0]
+    assert kind == "respond" and kwargs == {"ephemeral": True}
+    assert topic not in text
+    assert "cubbie_linked user=1" in caplog.text
+    assert topic not in caplog.text
+
+
+def test_link_again_makes_a_new_token(bot_module, monkeypatch):
+    sent = []
+    monkeypatch.setattr(bot_module, "dm", fake_dm(sent))
+    asyncio.run(bot_module.receipts_link.callback(FakeInteraction(1, 10)))
+    asyncio.run(bot_module.receipts_link.callback(FakeInteraction(1, 10)))
+    first, second = (text.splitlines()[-1] for _, text in sent)
+    assert first != second
+    assert bot_module.store.cubbie_topic(1) == second
+
+
+def test_link_stores_nothing_when_dm_fails(bot_module, monkeypatch, caplog):
+    async def dm(user_id, text, reactions=()):
+        return None
+    monkeypatch.setattr(bot_module, "dm", dm)
+    interaction = FakeInteraction(1, 10)
+    with caplog.at_level(logging.INFO):
+        asyncio.run(bot_module.receipts_link.callback(interaction))
+    assert bot_module.store.cubbie_topic(1) is None
+    assert interaction.calls == [("respond", bot_module.voice.link_dm_failed(), {"ephemeral": True})]
+    assert "cubbie_link_dm_failed user=1" in caplog.text
+    assert "cubbie_linked" not in caplog.text
+
+
+def test_unlink_removes_the_token(bot_module, caplog):
+    bot_module.store.link_cubbie(1, "receipts-abcdefghijklmnop")
+    interaction = FakeInteraction(1, 10)
+    with caplog.at_level(logging.INFO):
+        asyncio.run(bot_module.receipts_unlink.callback(interaction))
+    assert bot_module.store.cubbie_topic(1) is None
+    assert interaction.calls == [("respond", bot_module.voice.unlink_text(), {"ephemeral": True})]
+    assert "cubbie_unlinked user=1" in caplog.text
+    assert "abcdefghijklmnop" not in caplog.text
+
+
+def test_unlink_when_not_linked(bot_module):
+    interaction = FakeInteraction(1, 10)
+    asyncio.run(bot_module.receipts_unlink.callback(interaction))
+    assert interaction.calls == [("respond", bot_module.voice.unlink_none_text(), {"ephemeral": True})]

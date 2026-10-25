@@ -13,6 +13,7 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 import awards
+import cubbie
 import demo
 import detect
 import nudges
@@ -396,6 +397,29 @@ async def receipts_off(interaction: discord.Interaction):
     store.set_channel(interaction.channel_id, False)
     await interaction.response.send_message(voice.off_text())
     log.info("channel_off channel=%s", interaction.channel_id)
+
+
+@receipts_group.command(name="link", description="connect cubbie to your receipts")
+async def receipts_link(interaction: discord.Interaction):
+    # the topic works like a password. it goes out by dm, and is only saved once the dm worked.
+    topic = cubbie.new_topic()
+    sent = await dm(interaction.user.id, voice.link_dm(topic))
+    if sent is None:
+        await interaction.response.send_message(voice.link_dm_failed(), ephemeral=True)
+        log.info("cubbie_link_dm_failed user=%s", interaction.user.id)
+        return
+    store.link_cubbie(interaction.user.id, topic)
+    await interaction.response.send_message(voice.link_reply(), ephemeral=True)
+    log.info("cubbie_linked user=%s", interaction.user.id)
+
+
+@receipts_group.command(name="unlink", description="disconnect cubbie from your receipts")
+async def receipts_unlink(interaction: discord.Interaction):
+    if not store.unlink_cubbie(interaction.user.id):
+        await interaction.response.send_message(voice.unlink_none_text(), ephemeral=True)
+        return
+    await interaction.response.send_message(voice.unlink_text(), ephemeral=True)
+    log.info("cubbie_unlinked user=%s", interaction.user.id)
 
 
 @receipts_group.command(name="board", description="who promised what")

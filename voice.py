@@ -146,6 +146,7 @@ def help_text():
         "`/awards` for the playful weekly awards.",
         "`/forgetme` wipes everything i have on you.",
         "`/receipts off` turns me off in a channel.",
+        "`/receipts link` connects cubbie, so it hears about your receipts. `/receipts unlink` stops that.",
     ])
 
 
@@ -188,6 +189,31 @@ def tick_bad_text():
 
 def demo_denied_text():
     return "only demo runners can do this."
+
+
+# cubbie link. the token goes by dm only, and the channel replies never repeat it.
+
+def link_dm(topic):
+    return "\n".join([
+        "save this in Cubbie as RECEIPTS_LINK_TOKEN. it works like a password.",
+        topic,
+    ])
+
+
+def link_reply():
+    return "sent you a dm with your cubbie token."
+
+
+def link_dm_failed():
+    return "i couldn't dm you. open your dms for this server and try again."
+
+
+def unlink_text():
+    return "ok, unlinked. cubbie won't hear about your receipts anymore."
+
+
+def unlink_none_text():
+    return "you weren't linked to cubbie."
 
 
 _DIGITS = re.compile(r"\d+")

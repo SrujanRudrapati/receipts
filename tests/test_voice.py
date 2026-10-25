@@ -44,6 +44,8 @@ def all_outputs(groups):
         voice.off_text(), voice.forgot_text(3), voice.undo_text(),
         voice.done_text("slides"), voice.not_found_text(), voice.demo_banner(),
         voice.tick_text(24, "thu 5pm"), voice.tick_bad_text(), voice.demo_denied_text(),
+        voice.link_dm("receipts-abcdefghijklmnop"), voice.link_reply(), voice.link_dm_failed(),
+        voice.unlink_text(), voice.unlink_none_text(),
     ]
 
 
@@ -104,8 +106,20 @@ def test_awards_ties_and_skips():
 
 def test_help_mentions_commands():
     h = voice.help_text()
-    for s in ("/receipts on", "/done", "/receipts board", "/awards", "/forgetme", "/receipts off", "not a promise"):
+    for s in ("/receipts on", "/done", "/receipts board", "/awards", "/forgetme", "/receipts off",
+              "not a promise", "/receipts link", "/receipts unlink"):
         assert s in h
+
+
+def test_link_dm_has_the_instruction_and_the_token():
+    text = voice.link_dm("receipts-abcdefghijklmnop")
+    assert "save this in Cubbie as RECEIPTS_LINK_TOKEN. it works like a password." in text
+    assert text.splitlines()[-1] == "receipts-abcdefghijklmnop"
+
+
+def test_link_replies_never_carry_the_token():
+    for text in (voice.link_reply(), voice.link_dm_failed(), voice.unlink_text(), voice.unlink_none_text()):
+        assert "receipts-" not in text
 
 
 def test_demo_banner():

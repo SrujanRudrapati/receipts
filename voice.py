@@ -66,7 +66,11 @@ def _date_label(due):
 
 
 def _lines(receipts):
-    return [f"• {r.what} (due {_date_label(r.due)})" for r in receipts]
+    out = []
+    for r in receipts:
+        tag = ", list" if getattr(r, "list_id", None) else ""
+        out.append(f"• {r.what} (due {_date_label(r.due)}{tag})")
+    return out
 
 
 def _cap(text: str) -> str:
@@ -78,11 +82,22 @@ def _cap(text: str) -> str:
     return kept + "\n" + MORE_LINE
 
 
-def board_text(groups, names, include_overdue):
+def _list_summary(lst):
+    count = len(lst.entries)
+    if lst.status != "open":
+        return f"{lst.title}: {count} in (closed)"
+    if lst.slots is None:
+        return f"{lst.title}: {count} in"
+    return f"{lst.title}: {count} in, {max(lst.slots - count, 0)} open"
+
+
+def board_text(groups, names, include_overdue, lists=()):
     sections = [("open", None), ("done", "done:")]
     if include_overdue:
         sections.append(("overdue", "overdue:"))
     blocks = []
+    if lists:
+        blocks.append("\n".join(["lists"] + [_list_summary(lst) for lst in lists]))
     for user_id, buckets in groups.items():
         body = []
         for key, label in sections:
@@ -105,6 +120,36 @@ def overdue_text(groups, names):
     if not blocks:
         return "nothing overdue."
     return _cap("\n\n".join(blocks))
+
+
+# sign-up lists (接龙). one post the bot edits in place.
+
+def list_text(title, entries, slots, names, closed):
+    head = f"📋 {title}" + (" (closed)" if closed else "")
+    lines = []
+    for number, entry in enumerate(entries, start=1):
+        who = _name(names, entry["user_id"])
+        item = f": {entry['item']}" if entry.get("item") else ""
+        lines.append(f"{number}. {who}{item}")
+    if slots is not None and not closed:
+        lines.extend(f"{number}. open" for number in range(len(entries) + 1, slots + 1))
+    if not lines:
+        lines.append("nobody yet.")
+    if not closed:
+        lines.append("react 🙋 to join")
+    return _cap("\n".join([head] + lines))
+
+
+def list_closed_text(title, count):
+    return f"closed {title}. {count} in."
+
+
+def list_none_text():
+    return "no open list here."
+
+
+def list_full_text(title):
+    return f"{title} is full."
 
 
 def _join_names(user_ids, names):
@@ -143,6 +188,7 @@ def help_text():
         "react ✅ or use `/done <what>` when it's finished.",
         "`/receipts board` shows who said what.",
         "ask \"who said they'd ...\" and i'll dig up the receipt.",
+        "say \"who's in for ...\" or \"need 3 drivers\" and i'll start a 接龙 sign-up list. reply \"me\" or react 🙋 to join. `/receipts list close` locks it.",
         "`/awards` for the playful weekly awards.",
         "`/forgetme` wipes everything i have on you.",
         "`/receipts off` turns me off in a channel.",

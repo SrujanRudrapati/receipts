@@ -326,17 +326,32 @@ async def refresh_list_post(lst) -> None:
         log.info("list_edit_failed list=%s error=%s", lst.id, type(error).__name__)
 
 
+async def scrub_list_posts(started: list, joined: list) -> None:
+    """after /forgetme: lists the person started are blanked, lists they joined are redrawn without them."""
+    for lst in started:
+        try:
+            channel = await get_channel(lst.channel_id)
+            post = await channel.fetch_message(lst.post_message_id)
+            await post.edit(content=voice.list_removed_text())
+        except discord.HTTPException as error:
+            log.info("list_edit_failed list=%s error=%s", lst.id, type(error).__name__)
+    for lst in joined:
+        fresh = store.get_list(lst.id)
+        if fresh is not None:
+            await refresh_list_post(fresh)
+
+
 async def handle_list_starter(message: discord.Message, text: str, author_id: int) -> bool:
     """'who's in for ...' and friends start a list. returns True if handled."""
     found = await asyncio.to_thread(lists.extract_starter, text, author_id, now())
     if found is None:
         return False
     post = await message.channel.send(voice.list_text(found["title"], [], found["slots"], {}, closed=False))
-    await post.add_reaction(CLAIM_EMOJI)
     lst = store.add_list(message.channel.id, found["title"], found["slots"], message.id, post.id,
                          author_id, now())
     store.link_message(post.id, "list", lst.id)
     log.info("list_started list=%s channel=%s", lst.id, message.channel.id)
+    await post.add_reaction(CLAIM_EMOJI)
     return True
 
 
@@ -476,6 +491,8 @@ async def handle_dm_reaction(payload, emoji: str) -> None:
         log.info("nudge_ack receipt=%s", receipt.id)
     elif emoji == HELP_EMOJI:
         store.unlink_message(payload.message_id)
+        # asking for a hand is an answer too. no ding for this one.
+        store.mark_acked(receipt.id)
         await request_help(receipt)
 
 
@@ -536,8 +553,12 @@ async def send_last_calls(current: datetime) -> None:
         try:
             text = voice.ding_dm(receipt.what, nudges.when_label(receipt.due, current))
             message = await dm(receipt.user_id, text, reactions=(DONE_EMOJI, HELP_EMOJI))
-            if message is not None:
-                store.link_message(message.id, "nudge", receipt.id)
+            if message is None:
+                # never asked, so "went quiet" would be wrong. the ding stands down for this one.
+                store.mark_dinged(receipt.id)
+                log.info("last_call_dm_failed receipt=%s", receipt.id)
+                continue
+            store.link_message(message.id, "nudge", receipt.id)
             log.info("last_call_sent receipt=%s", receipt.id)
         except Exception as error:
             log.info("last_call_failed receipt=%s error=%s", receipt.id, type(error).__name__)
@@ -785,10 +806,12 @@ async def awards_command(interaction: discord.Interaction):
 
 @bot.tree.command(name="forgetme", description="delete everything receipts has on you")
 async def forgetme_command(interaction: discord.Interaction):
+    started, joined = store.lists_touching(interaction.user.id)
     count = store.forget(interaction.user.id)
     _name_cache.pop(interaction.user.id, None)
     await interaction.response.send_message(voice.forgot_text(count), ephemeral=True)
     log.info("forget user=%s count=%s", interaction.user.id, count)
+    await scrub_list_posts(started, joined)
 
 
 @bot.tree.command(name="help", description="how receipts works")

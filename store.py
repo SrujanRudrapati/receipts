@@ -327,6 +327,13 @@ class Store:
                        for e in lst.entries]
         self.save()
 
+    def lists_touching(self, user_id: int) -> tuple[list[SignupList], list[SignupList]]:
+        """(lists this person started, lists they joined). forget() drops the first and scrubs the second."""
+        started = [l for l in self._lists.values() if l.author_id == user_id]
+        joined = [l for l in self._lists.values()
+                  if l.author_id != user_id and any(e["user_id"] == user_id for e in l.entries)]
+        return started, joined
+
     def close_list(self, list_id: str) -> SignupList | None:
         lst = self.get_list(list_id)
         if lst is None:
@@ -344,12 +351,13 @@ class Store:
         ]
         for rid in gone:
             del self._receipts[rid]
-        self._links = {m: v for m, v in self._links.items() if v[1] not in gone}
         self._cubbie.pop(user_id, None)
         self._ding.discard(user_id)
-        self._lists = {lid: l for lid, l in self._lists.items() if l.author_id != user_id}
+        dead_lists = [lid for lid, l in self._lists.items() if l.author_id == user_id]
+        self._lists = {lid: l for lid, l in self._lists.items() if lid not in dead_lists}
         for lst in self._lists.values():
             lst.entries = [e for e in lst.entries if e["user_id"] != user_id]
+        self._links = {m: v for m, v in self._links.items() if v[1] not in gone and v[1] not in dead_lists}
         # someone who asked to be forgotten is left out of any later backfill scan.
         self._opted_out.add(user_id)
         self.save()

@@ -258,3 +258,39 @@ def test_demo_lines_include_a_potluck_list(bot_module):
     texts = [text for _, text in bot_module.demo.DEMO_LINES]
     assert any(bot_module.lists.rule_starter(t) for t in texts)
     assert any(bot_module.lists.join(t, bot_module.now()) for t in texts)
+
+
+# ---- review fixes
+
+
+def test_starter_stores_the_list_before_reacting(bot_module, wired, monkeypatch):
+    class NoReactChannel(FakeChannel):
+        async def send(self, text):
+            post = await super().send(text)
+
+            async def add_reaction(emoji):
+                raise discord.HTTPException(NS(status=403, reason="no"), "missing permissions")
+            post.add_reaction = add_reaction
+            return post
+    channel = NoReactChannel()
+
+    async def get_channel(channel_id):
+        return channel
+    monkeypatch.setattr(bot_module, "get_channel", get_channel)
+    with pytest.raises(discord.HTTPException):
+        start(bot_module, channel)
+    assert bot_module.store.find_list_by_starter(20) is not None
+
+
+def test_forgetme_scrubs_joined_lists_and_replaces_started_ones(bot_module, wired):
+    start(bot_module, wired, text="who's in for bowling", user_id=1, message_id=20)
+    start(bot_module, wired, text="who's in for the potluck", user_id=2, message_id=30)
+    join(bot_module, wired, "I'll bring chips", 1, 31, reference=30)
+    join(bot_module, wired, "me", 3, 32, reference=30)
+    interaction = FakeInteraction(1, 10)
+    asyncio.run(bot_module.forgetme_command.callback(interaction))
+    assert wired.posts[9001].edits[-1] == "📋 list removed"
+    assert wired.posts[9002].edits[-1] == "📋 potluck\n1. Bhavana\nreact 🙋 to join"
+    assert bot_module.store.lookup_message(9001) is None
+    assert bot_module.store.find_by_message(31) is None
+    assert "Yash" not in wired.posts[9002].content and "chips" not in wired.posts[9002].content

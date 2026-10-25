@@ -187,3 +187,43 @@ def test_no_channel_post_ever_carries_the_summary(bot_module, wired):
     advance(bot_module, 0.5)
     for _, text in wired.posted:
         assert "private" not in text and text == "🔔 reminded"
+
+
+# ---- review fixes
+
+
+def test_asking_for_help_on_the_last_call_counts_as_an_answer(bot_module, wired, monkeypatch):
+    async def name_of(uid):
+        return "Yash"
+    monkeypatch.setattr(bot_module, "name_of", name_of)
+    posted = []
+
+    async def add_reaction(emoji):
+        return None
+
+    async def get_channel(channel_id):
+        async def send(text):
+            posted.append(text)
+            return NS(id=801, add_reaction=add_reaction)
+        return NS(id=channel_id, send=send)
+    monkeypatch.setattr(bot_module, "get_channel", get_channel)
+    r = add(bot_module, 1.5)
+    run(bot_module)
+    dm_id = 5000 + len(wired.sent)
+    asyncio.run(bot_module.handle_dm_reaction(NS(message_id=dm_id, user_id=1), bot_module.HELP_EMOJI))
+    assert posted == ["Yash could use a hand with intro slides. anyone?"]
+    assert bot_module.store.get(r.id).acked is True
+    advance(bot_module, 0.5)
+    assert wired.relay.posts == [] and posted == ["Yash could use a hand with intro slides. anyone?"]
+
+
+def test_last_call_that_cannot_be_delivered_does_not_escalate(bot_module, wired, monkeypatch, caplog):
+    async def dm(user_id, text, reactions=()):
+        return None
+    monkeypatch.setattr(bot_module, "dm", dm)
+    r = add(bot_module, 1.5)
+    with caplog.at_level(logging.INFO):
+        run(bot_module)
+    assert f"last_call_dm_failed receipt={r.id}" in caplog.text
+    advance(bot_module, 0.5)
+    assert wired.relay.posts == [] and wired.posted == []

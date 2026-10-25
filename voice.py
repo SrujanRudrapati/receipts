@@ -162,6 +162,10 @@ def list_text(title, entries, slots, names, closed):
     return _cap("\n".join([head] + lines))
 
 
+def list_removed_text():
+    return "📋 list removed"
+
+
 def list_closed_text(title, count):
     return f"closed {title}. {count} in."
 
